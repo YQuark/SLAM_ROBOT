@@ -872,7 +872,7 @@ static void handleWifiStatus() {
 
 static void initWifiStack() {
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
-  WiFi.setOutputPower(5.0f);  // 降低功率减少电流峰值，避免掉线
+  WiFi.setOutputPower(7.0f);  // 适中功率，平衡稳定性和距离
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASS);
 }

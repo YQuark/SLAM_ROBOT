@@ -876,6 +876,18 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  ESP_Link_UART_RxCpltCallback(huart);
+  PC_Link_UART_RxCpltCallback(huart);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  ESP_Link_UART_ErrorCallback(huart);
+  PC_Link_UART_ErrorCallback(huart);
+}
+
 /* USER CODE END 4 */
 
 /**
