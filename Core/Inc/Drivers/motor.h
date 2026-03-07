@@ -27,9 +27,23 @@ extern TIM_HandleTypeDef htim1;
 #define MOTOR_R2_DIR_PORT            GPIOE
 #define MOTOR_R2_DIR_PIN             GPIO_PIN_15
 
+/* 方向极性（+1 保持，-1 取反）；如果某个轮子不转/反转异常，先改这里再测 */
+#ifndef MOTOR_L1_DIR_POLARITY
+#define MOTOR_L1_DIR_POLARITY        (+1)
+#endif
+#ifndef MOTOR_L2_DIR_POLARITY
+#define MOTOR_L2_DIR_POLARITY        (-1)
+#endif
+#ifndef MOTOR_R1_DIR_POLARITY
+#define MOTOR_R1_DIR_POLARITY        (-1)
+#endif
+#ifndef MOTOR_R2_DIR_POLARITY
+#define MOTOR_R2_DIR_POLARITY        (+1)
+#endif
+
 /* 占空比上限（0..1），先保守一些；闭环稳定后可放开到 1.0f */
 #ifndef MOTOR_DUTY_LIMIT_DEFAULT
-#define MOTOR_DUTY_LIMIT_DEFAULT     0.80f
+#define MOTOR_DUTY_LIMIT_DEFAULT     1.0f
 #endif
 /* ================================================================ */
 

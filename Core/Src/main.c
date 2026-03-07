@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+﻿/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file           : main.c
@@ -204,7 +204,7 @@ static float PS2_AxisToNorm(uint8_t raw, uint8_t invert)
 }
 #endif
 
-/* OLED显示：显示系统运行状态 */
+/* OLED鏄剧ず锛氭樉绀虹郴缁熻繍琛岀姸锟?*/
 static void System_ShowStatus(void)
 {
   const RobotControlState_t *st_dash = RobotControl_GetState();
@@ -223,7 +223,7 @@ static void System_ShowStatus(void)
 
   SSD1306_Fill(0);
 
-  // 第1行：电池电压
+  // 锟?琛岋細鐢垫睜鐢靛帇
   snprintf(line1, sizeof(line1), "BAT %.2fV", batt.voltage);
   SSD1306_GotoXY(0, 0);
   SSD1306_Puts(line1);
@@ -236,7 +236,7 @@ static void System_ShowStatus(void)
   SSD1306_GotoXY(0, 8);
   SSD1306_Puts(line2);
 
-  // 第3行：编码器速度（简化显示）
+  // 锟?琛岋細缂栫爜鍣ㄩ€熷害锛堢畝鍖栨樉绀猴級
   const RobotControlState_t *state = RobotControl_GetState();
   int vel_l = (int)fabsf(state->meas_cps[0]);
   int vel_r = (int)fabsf(state->meas_cps[2]);
@@ -257,7 +257,7 @@ static void System_ShowStatus(void)
   SSD1306_UpdateScreen();
 }
 
-/* 系统自检函数 */
+/* 绯荤粺鑷鍑芥暟 */
 static void System_SelfTest(void)
 {
 #if !SELFTEST_ENABLE
@@ -269,7 +269,7 @@ static void System_SelfTest(void)
 
   USART_SendString("\r\n========== SYSTEM SELF TEST ==========\r\n");
 
-  /* 1. 电池检测 */
+  /* 1. 鐢垫睜妫€锟?*/
   USART_SendString("[1] Battery... ");
   Battery_Update(&batt);
   if (batt.voltage > 6.0f && batt.voltage < 12.0f) {
@@ -281,11 +281,11 @@ static void System_SelfTest(void)
     test_ok = 0;
   }
 
-  /* 2. 编码器检测 */
+  /* 2. 缂栫爜鍣ㄦ锟?*/
   USART_SendString("[2] Encoders... ");
   HAL_Delay(50);
 
-  /* 读取初始计数器值 */
+  /* 璇诲彇鍒濆璁℃暟鍣拷?*/
   n = snprintf(buf, sizeof(buf), "CNT: L1=%d L2=%d R1=%d R2=%d\r\n",
                (int)__HAL_TIM_GET_COUNTER(&htim2),
                (int)__HAL_TIM_GET_COUNTER(&htim3),
@@ -293,7 +293,7 @@ static void System_SelfTest(void)
                (int)__HAL_TIM_GET_COUNTER(&htim5));
   USART_SendString(buf);
 
-  /* 检查定时器是否使能 */
+  /* 妫€鏌ュ畾鏃跺櫒鏄惁浣胯兘 */
   USART_SendString("  TIM enabled: ");
   if (htim2.Instance->CR1 & TIM_CR1_CEN) USART_SendString("L1=OK ");
   else USART_SendString("L1=FAIL ");
@@ -308,7 +308,7 @@ static void System_SelfTest(void)
   else USART_SendString("R2=FAIL ");
   USART_SendString("\r\n");
 
-  /* 检查定时器是否配置为编码器模式 */
+  /* 妫€鏌ュ畾鏃跺櫒鏄惁閰嶇疆涓虹紪鐮佸櫒妯″紡 */
   USART_SendString("  TIM encoder mode: ");
   uint8_t tim2_enc = ((htim2.Instance->SMCR & TIM_SMCR_SMS) == 3) ? 1 : 0;
   uint8_t tim3_enc = ((htim3.Instance->SMCR & TIM_SMCR_SMS) == 3) ? 1 : 0;
@@ -328,7 +328,7 @@ static void System_SelfTest(void)
   else USART_SendString("R2=FAIL ");
   USART_SendString("\r\n");
 
-  /* 手动转动轮子测试编码器 */
+  /* 鎵嬪姩杞姩杞瓙娴嬭瘯缂栫爜锟?*/
   USART_SendString("  Please rotate any wheel for a short time...\r\n");
   HAL_Delay(SELFTEST_ROTATE_MS);
   n = snprintf(buf, sizeof(buf), "  After rotate: L1=%d L2=%d R1=%d R2=%d\r\n",
@@ -338,7 +338,7 @@ static void System_SelfTest(void)
                (int)__HAL_TIM_GET_COUNTER(&htim5));
   USART_SendString(buf);
   
-  /* 检查TIM3和TIM5的详细寄存器状态 */
+  /* 妫€鏌IM3鍜孴IM5鐨勮缁嗗瘎瀛樺櫒鐘讹拷?*/
   USART_SendString("  TIM3 and TIM5 detailed status:\r\n");
   n = snprintf(buf, sizeof(buf), "    TIM3: CR1=0x%08X SMCR=0x%08X CCMR1=0x%08X CNT=%u\r\n",
                (unsigned int)htim3.Instance->CR1,
@@ -353,7 +353,7 @@ static void System_SelfTest(void)
                (unsigned int)__HAL_TIM_GET_COUNTER(&htim5));
   USART_SendString(buf);
   
-  /* 检查RCC时钟是否使能 */
+  /* 妫€鏌CC鏃堕挓鏄惁浣胯兘 */
   USART_SendString("  RCC clock status:\r\n");
   RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
   RCC->APB1ENR |= RCC_APB1ENR_TIM5EN;
@@ -364,7 +364,7 @@ static void System_SelfTest(void)
   if (RCC->APB1ENR & RCC_APB1ENR_TIM5EN) USART_SendString("    TIM5 clock: ENABLED\r\n");
   else USART_SendString("    TIM5 clock: DISABLED\r\n");
 
-  /* 检查GPIO模式（诊断编码器引脚是否正确配置） */
+  /* 妫€鏌PIO妯″紡锛堣瘖鏂紪鐮佸櫒寮曡剼鏄惁姝ｇ‘閰嶇疆锟?*/
   USART_SendString("  GPIO mode check:\r\n");
   
   /* L1: PA15 (TIM2 CH1) */
@@ -397,7 +397,7 @@ static void System_SelfTest(void)
                pa0_mode, pa1_mode);
   USART_SendString(buf);
   
-  /* 检查GPIO Alternate Function配置 */
+  /* 妫€鏌PIO Alternate Function閰嶇疆 */
   USART_SendString("  GPIO AF check:\r\n");
   uint32_t pa_afrl = GPIOA->AFR[0];  // PA0-PA7
   uint8_t pa0_af = (pa_afrl >> (0 * 4)) & 0xF;  // PA0 AF
@@ -422,10 +422,10 @@ static void System_SelfTest(void)
                pd12_af, pd13_af);
   USART_SendString(buf);
 
-  /* 检查GPIO引脚实际输入状态（IDR）- 检测编码器信号是否存在 */
+  /* 妫€鏌PIO寮曡剼瀹為檯杈撳叆鐘舵€侊紙IDR锟? 妫€娴嬬紪鐮佸櫒淇″彿鏄惁瀛樺湪 */
   USART_SendString("  GPIO IDR check (signal presence):\r\n");
   
-  /* 读取引脚状态 - 静态状态 */
+  /* 璇诲彇寮曡剼鐘讹拷?- 闈欐€佺姸锟?*/
   uint16_t pa_idr = GPIOA->IDR;
   uint16_t pb_idr = GPIOB->IDR;
   uint16_t pc_idr = GPIOC->IDR;
@@ -455,7 +455,7 @@ static void System_SelfTest(void)
   n = snprintf(buf, sizeof(buf), "    R2: PA0=%d PA1=%d\r\n", r2_a, r2_b);
   USART_SendString(buf);
   
-  /* 检查TIM CCR寄存器 - 确认TIM是否接收到编码器信号 */
+  /* 妫€鏌IM CCR瀵勫瓨锟?- 纭TIM鏄惁鎺ユ敹鍒扮紪鐮佸櫒淇″彿 */
   USART_SendString("  TIM CCR check (capture values):\r\n");
   n = snprintf(buf, sizeof(buf), "    TIM2 CCR1=%u CCR2=%u\r\n", 
                (unsigned int)__HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_1),
@@ -475,7 +475,7 @@ static void System_SelfTest(void)
   USART_SendString(buf);
   
 #if SELFTEST_SIGNAL_CHECK
-  /* 动态测试：读取引脚状态变化（检测信号活动） */
+  /* 鍔ㄦ€佹祴璇曪細璇诲彇寮曡剼鐘舵€佸彉鍖栵紙妫€娴嬩俊鍙锋椿鍔級 */
   USART_SendString("  Signal activity test (rotate wheels):\r\n");
   uint32_t changes_l1 = 0, changes_l2 = 0, changes_r1 = 0, changes_r2 = 0;
   uint8_t last_l1_a = l1_a, last_l1_b = l1_b;
@@ -522,7 +522,7 @@ static void System_SelfTest(void)
   if (changes_r2 == 0) USART_SendString("    WARNING: R2 NO SIGNAL - Check wiring!\r\n");
 #endif
 
-  /* 3. 电机PWM检测 */
+  /* 3. 鐢垫満PWM妫€锟?*/
   USART_SendString("[3] Motor PWM (all 4 wheels)... ");
   motor_set(MOTOR_L1, 0.3f);
   motor_set(MOTOR_L2, 0.3f);
@@ -535,7 +535,7 @@ static void System_SelfTest(void)
   motor_set(MOTOR_R2, 0.0f);
   USART_SendString("OK\r\n");
 
-  /* 4. IMU检测 */
+  /* 4. IMU妫€锟?*/
   USART_SendString("[4] IMU MPU6050... ");
   if (MPU6050_ReadRaw(&imu_data) == HAL_OK) {
     MPU6050_Convert(&imu_data);
@@ -547,11 +547,11 @@ static void System_SelfTest(void)
     test_ok = 0;
   }
 
-  /* 5. ESP01S通信检测 */
+  /* 5. ESP01S閫氫俊妫€锟?*/
   USART_SendString("[5] ESP01S UART2... ");
   USART_SendString("OK (waiting for commands)\r\n");
 
-  /* 6. OLED显示检测 */
+  /* 6. OLED鏄剧ず妫€锟?*/
   USART_SendString("[6] OLED SSD1306... ");
   SSD1306_Fill(0);
   SSD1306_GotoXY(0, 0);
@@ -559,7 +559,7 @@ static void System_SelfTest(void)
   SSD1306_UpdateScreen();
   USART_SendString("OK\r\n");
 
-  /* 总结 */
+  /* 鎬荤粨 */
   USART_SendString("======================================\r\n");
   if (test_ok) {
     USART_SendString("RESULT: ALL TESTS PASSED\r\n");
@@ -603,13 +603,13 @@ int main(void)
   MX_ADC1_Init();
   MX_I2C1_Init();
   
-  /* 先初始化编码器定时器（在GPIO之前） */
+  /* 鍏堝垵濮嬪寲缂栫爜鍣ㄥ畾鏃跺櫒锛堝湪GPIO涔嬪墠锟?*/
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_TIM5_Init();
   
-  /* 最后初始化GPIO（可能会覆盖某些引脚，但编码器已经启动） */
+  /* 鏈€鍚庡垵濮嬪寲GPIO锛堝彲鑳戒細瑕嗙洊鏌愪簺寮曡剼锛屼絾缂栫爜鍣ㄥ凡缁忓惎鍔級 */
   MX_GPIO_Init();
   
   MX_TIM1_Init();
@@ -619,17 +619,25 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
 
-  /* 电机初始化保持不变 */
+  /* 鐢垫満鍒濆鍖栦繚鎸佷笉锟?*/
   motor_init();
-  motor_set_duty_limit(1.0f);     // 满占空比输出
+  motor_set_duty_limit(0.75f);    // limit startup/current spikes
   s_nominal_duty_limit = motor_get_duty_limit();
   motor_set(MOTOR_L1, 0.0f);
   motor_set(MOTOR_L2, 0.0f);
   motor_set(MOTOR_R1, 0.0f);
   motor_set(MOTOR_R2, 0.0f);
   Encoder_Init();
+#if ENC_BOOT_CALIB_ENABLE
+  USART_SendString("Encoder static calibration...\r\n");
+  if (Encoder_CalibrateStatic(ENC_BOOT_CALIB_MS, ENC_BOOT_CALIB_SAMPLE_MS)) {
+    USART_SendString("Encoder calibration OK\r\n");
+  } else {
+    USART_SendString("Encoder calibration WARN: wheel moved/noisy\r\n");
+  }
+#endif
 
-  /* 启动提示 */
+  /* 鍚姩鎻愮ず */
   USART_SendString("\r\n===UART Monitor Start ===\r\n");
   {
     uint32_t csr = RCC->CSR;
@@ -647,7 +655,7 @@ int main(void)
 
   I2C1_Scan();
 
-  // 初始化 MPU6050
+  // 鍒濆锟?MPU6050
   HAL_StatusTypeDef st;
   char dbg[80];
   int n = 0;
@@ -671,29 +679,30 @@ int main(void)
   Battery_Init(&hadc1);
   ESP_Link_Init(&huart2);
   PC_Link_Init(&huart3);
-  // === 新增：OLED 初始化 ===
+  // === 鏂板锛歄LED 鍒濆锟?===
   if (SSD1306_Init() != HAL_OK) {
     USART_SendString("SSD1306 Init FAIL\r\n");
   } else {
     USART_SendString("SSD1306 Init OK\r\n");
-    // 先做一次显示，避免一开始是空屏
+    // 鍏堝仛涓€娆℃樉绀猴紝閬垮厤涓€寮€濮嬫槸绌哄睆
     batt.voltage = 0.0f;
     batt.percent = 0.0f;
     SSD1306_ShowBattery(&batt);
   }
 
   RobotControl_Init();
-  RobotControl_SetMode(MODE_OPEN_LOOP);  // 先用开环模式测试
+  s_nominal_duty_limit = motor_get_duty_limit();
+  RobotControl_SetMode(MODE_OPEN_LOOP);  // Start in open-loop for drivetrain verification.
   RobotControl_SetIMUEnabled(imu_ready ? 1 : 0);
 
-  /* PS2 初始化（在所有编码器和电机初始化完成后） */
+  /* PS2 鍒濆鍖栵紙鍦ㄦ墍鏈夌紪鐮佸櫒鍜岀數鏈哄垵濮嬪寲瀹屾垚鍚庯級 */
 #if PS2_ENABLE
   USART_SendString("PS2 Init...\r\n");
   PS2_Init();
   USART_SendString("PS2 Init done\r\n");
 #endif
 
-  /* 系统自检 */
+  /* 绯荤粺鑷 */
   System_SelfTest();
   Safety_WatchdogInit();
   Safety_WatchdogFeed();
@@ -724,7 +733,7 @@ int main(void)
       HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_4);
     }
 
-    /* ---------------- PS2 手柄扫描与指令 ---------------- */
+    /* ---------------- PS2 鎵嬫焺鎵弿涓庢寚锟?---------------- */
 #if PS2_ENABLE
     if (now - last_ps2 >= PS2_SCAN_INTERVAL_MS) {
       last_ps2 = now;
@@ -733,7 +742,7 @@ int main(void)
         float w = PS2_AxisToNorm(ps2.RJoy_LR, 0);
         RobotControl_SetCmd_PS2(v, w, now);
       } else {
-        /* PS2扫描失败，只在首次失败时警告 */
+        /* PS2鎵弿澶辫触锛屽彧鍦ㄩ娆″け璐ユ椂璀﹀憡 */
         static uint8_t ps2_warned = 0;
         if (!ps2_warned) {
           USART_SendString("PS2: Invalid mode (0x");
@@ -747,7 +756,7 @@ int main(void)
     }
 #endif
 
-    /* ---------------- IMU 更新 ---------------- */
+    /* ---------------- IMU 鏇存柊 ---------------- */
     if (now - last_imu >= IMU_READ_INTERVAL_MS) {
       last_imu = now;
       if (imu_ready && MPU6050_ReadRaw(&imu_data) == HAL_OK) {
@@ -758,7 +767,7 @@ int main(void)
       }
     }
 
-    /* ---------------- 电池电压更新 ---------------- */
+    /* ---------------- 鐢垫睜鐢靛帇鏇存柊 ---------------- */
     if (now - last_batt >= BATTERY_INTERVAL_MS) {
       last_batt = now;
       Battery_Update(&batt);
@@ -770,7 +779,7 @@ int main(void)
       System_ShowStatus();
     }
 
-    /* ---------------- 编码器 + 控制闭环 ---------------- */
+    /* ---------------- 缂栫爜锟?+ 鎺у埗闂幆 ---------------- */
     if (now - last_ctrl >= CTRL_PERIOD_MS) {
       float dt = (float)(now - last_ctrl) / 1000.0f;
       last_ctrl = now;
@@ -780,28 +789,33 @@ int main(void)
       Encoder_UpdateAll(dt);
       RobotControl_Update(dt, now);
 
-      /* 调试输出：显示当前控制状态（所有4个轮子） */
+      /* 璋冭瘯杈撳嚭锛氭樉绀哄綋鍓嶆帶鍒剁姸鎬侊紙鎵€锟?涓疆瀛愶級 */
       if (CTRL_DEBUG_ENABLE && (now - last_ctrl_dbg >= CTRL_DEBUG_INTERVAL_MS)) {
         last_ctrl_dbg = now;
         const RobotControlState_t *state = RobotControl_GetState();
-        char dbg[200];
+        uint16_t ccr[4];
+        uint8_t dir[4];
+        char dbg[320];
+        motor_get_debug(ccr, dir);
         int n = snprintf(dbg, sizeof(dbg),
-                         "Mode=%d Src=%d v=%.2f w=%.2f | Enc: L1:%.0f L2:%.0f R1:%.0f R2:%.0f | Out: L1:%.2f L2:%.2f R1:%.2f R2:%.2f\r\n",
+                         "Mode=%d Src=%d v=%.2f w=%.2f | Enc L1:%.0f L2:%.0f R1:%.0f R2:%.0f | Out L1:%.2f L2:%.2f R1:%.2f R2:%.2f | CCR %u,%u,%u,%u | DIR %u,%u,%u,%u\r\n",
                          RobotControl_GetMode(), state->src,
                          state->v_cmd, state->w_cmd,
                          state->meas_cps[0], state->meas_cps[1], state->meas_cps[2], state->meas_cps[3],
-                         state->u_out[0], state->u_out[1], state->u_out[2], state->u_out[3]);
+                         state->u_out[0], state->u_out[1], state->u_out[2], state->u_out[3],
+                         ccr[0], ccr[1], ccr[2], ccr[3],
+                         dir[0], dir[1], dir[2], dir[3]);
         HAL_UART_Transmit(&huart1, (uint8_t*)dbg, n, 100);
       }
     }
 
-    /* ---------------- ESP-01S 命令轮询 ---------------- */
+    /* ---------------- ESP-01S 鍛戒护杞 ---------------- */
     if (now - last_esp >= ESP_POLL_INTERVAL_MS) {
       last_esp = now;
       ESP_Link_Poll(&batt, &imu_data);
     }
 
-    /* ---------------- PC 命令轮询 ---------------- */
+    /* ---------------- PC 鍛戒护杞 ---------------- */
     if (now - last_pc >= PC_POLL_INTERVAL_MS) {
       last_pc = now;
       PC_Link_Poll(&batt, &imu_data);

@@ -71,6 +71,7 @@ struct StatusData {
   int16_t gzX10;
   uint8_t imuEnabled;
   uint8_t imuValid;
+  int16_t encVel[4];  // 缂傚倸鍊搁崐褰掓偋濠婂牊鍋夋繝濠傜墕闂傤垶鏌曟繛鐐澒闁稿鎹囬幃銏犵暋闁箑鏁?(counts/s)
   uint32_t lastRxMs;
 };
 
@@ -90,14 +91,21 @@ static float g_txCmdV = 0.0f;
 static float g_txCmdW = 0.0f;
 static char g_resetReason[64] = {0};
 static uint32_t g_lastHttpCmdMs = 0;
+static float g_lastHttpCmdV = 0.0f;
+static float g_lastHttpCmdW = 0.0f;
+static uint32_t g_lastHttpRxMs = 0;
+static uint32_t g_uartTxTimeouts = 0;
+static uint32_t g_loopMaxGapMs = 0;
+static uint32_t g_loopLastMs = 0;
 
 static const uint32_t WDT_TIMEOUT_MS = 8000;
-static const uint32_t DRIVE_SEND_PERIOD_MS = 20;
-static const uint32_t CMD_IDLE_STOP_MS = 2500;
-static const uint32_t STATUS_POLL_MS = 1600;
+static const uint32_t DRIVE_SEND_PERIOD_MS = 40;  // Reduce command TX pressure
+static const uint32_t CMD_IDLE_STOP_MS = 250;     // Stop quickly after HTTP command loss
+static const uint32_t STATUS_POLL_MS = 2000;  // Reduce status polling frequency
 static const uint32_t STA_CONNECT_TIMEOUT_MS = 15000;
-static const uint32_t CMD_DUP_FILTER_MS = 70;
-static const float CMD_SMOOTH_ALPHA = 0.65f;
+static const uint32_t CMD_DUP_FILTER_MS = 100;
+static const uint16_t SERIAL_RX_BUDGET_BYTES = 256;
+static const uint32_t UART_WRITE_TIMEOUT_MS = 8;
 
 static uint8_t nextSeq() {
   uint8_t seq = g_seq++;
@@ -246,7 +254,8 @@ static void buildStatusJson() {
   snprintf(g_statusJson, sizeof(g_statusJson),
            "{\"uptime_ms\":%lu,\"mode\":%u,\"src\":%u,"
            "\"vbatt\":%.3f,\"percent\":%.1f,\"v\":%.3f,\"w\":%.3f,"
-           "\"imu\":{\"gz\":%.1f,\"enabled\":%u,\"valid\":%u}}",
+           "\"imu\":{\"gz\":%.1f,\"enabled\":%u,\"valid\":%u},"
+           "\"enc\":[%d,%d,%d,%d]}",
            (unsigned long)g_status.uptimeMs,
            (unsigned)g_status.mode,
            (unsigned)g_status.src,
@@ -256,7 +265,11 @@ static void buildStatusJson() {
            wCmd,
            gz,
            (unsigned)g_status.imuEnabled,
-           (unsigned)g_status.imuValid);
+           (unsigned)g_status.imuValid,
+           (int)g_status.encVel[0],
+           (int)g_status.encVel[1],
+           (int)g_status.encVel[2],
+           (int)g_status.encVel[3]);
 }
 
 static bool parseStatusExtra(const uint8_t *data, uint16_t len) {
@@ -272,6 +285,16 @@ static bool parseStatusExtra(const uint8_t *data, uint16_t len) {
   g_status.gzX10 = (int16_t)getU16LE(&data[14]);
   g_status.imuEnabled = data[16];
   g_status.imuValid = data[17];
+
+  // 闂佽崵鍠愰悷杈╁緤妤ｅ啯鍊甸柣锝呯灱绾句粙鏌″搴′簽闁搞劍濞婇弻娑㈡晲閸愩劌顬夐梺鍝勬閸犳牠鐛?(闂備礁鎼崐鐟邦熆濮椻偓璺?
+  if (len >= 26) {
+    for (int i = 0; i < 4; i++) {
+      g_status.encVel[i] = (int16_t)getU16LE(&data[18 + i * 2]);
+    }
+  } else {
+    for (int i = 0; i < 4; i++) g_status.encVel[i] = 0;
+  }
+
   g_status.lastRxMs = millis();
 
   buildStatusJson();
@@ -300,9 +323,34 @@ static bool sendFrame(uint8_t msgType, uint8_t flags, uint8_t seq, const uint8_t
   uint16_t encLen = cobsEncode(frame, frameLen, enc, (uint16_t)(sizeof(enc) - 1));
   if (encLen == 0) return false;
   enc[encLen++] = 0x00;
-
-  size_t written = Serial.write(enc, encLen);
-  return written == encLen;
+  uint16_t off = 0;
+  uint32_t t0 = millis();
+  while (off < encLen) {
+    int avail = Serial.availableForWrite();
+    if (avail > 0) {
+      uint16_t n = (uint16_t)avail;
+      if (n > (uint16_t)(encLen - off)) n = (uint16_t)(encLen - off);
+      size_t written = Serial.write(enc + off, n);
+      if (written == 0) {
+        if ((uint32_t)(millis() - t0) > UART_WRITE_TIMEOUT_MS) {
+          g_uartTxTimeouts++;
+          return false;
+        }
+      } else {
+        off = (uint16_t)(off + written);
+      }
+      ESP.wdtFeed();
+      yield();
+      continue;
+    }
+    if ((uint32_t)(millis() - t0) > UART_WRITE_TIMEOUT_MS) {
+      g_uartTxTimeouts++;
+      return false;
+    }
+    ESP.wdtFeed();
+    yield();
+  }
+  return true;
 }
 
 static void processDecodedFrame(const uint8_t *frame, uint16_t len) {
@@ -338,7 +386,7 @@ static void processDecodedFrame(const uint8_t *frame, uint16_t len) {
     g_ack.extraLen = extraLen;
     if (extraLen > 0) memcpy(g_ack.extra, &payload[4], extraLen);
 
-    if (!g_ack.nack && g_ack.err == PROTO_ERR_OK && g_ack.extraLen >= 18) {
+    if (!g_ack.nack && g_ack.err == PROTO_ERR_OK && g_ack.extraLen >= 26) {
       parseStatusExtra(g_ack.extra, g_ack.extraLen);
     }
   }
@@ -346,7 +394,8 @@ static void processDecodedFrame(const uint8_t *frame, uint16_t len) {
 
 static void pumpSerial() {
   uint16_t spin = 0;
-  while (Serial.available()) {
+  uint16_t budget = SERIAL_RX_BUDGET_BYTES;
+  while (budget-- > 0 && Serial.available()) {
     uint8_t b = (uint8_t)Serial.read();
     ESP.wdtFeed();
     if (((++spin) & 0x3Fu) == 0u) {
@@ -438,12 +487,19 @@ static void serviceDriveTx(uint32_t now) {
   static uint32_t lastDriveTx = 0;
   if ((uint32_t)(now - lastDriveTx) < DRIVE_SEND_PERIOD_MS) return;
 
+  // If command has not changed, keepalive at a lower rate to reduce link pressure.
+  if (!g_cmdDirty && (uint32_t)(now - g_lastCmdTxMs) < 150u) {
+    return;
+  }
+
   if (g_cmdDirty) {
     g_cmdDirty = false;
   }
 
-  g_txCmdV += CMD_SMOOTH_ALPHA * (g_pendingCmdV - g_txCmdV);
-  g_txCmdW += CMD_SMOOTH_ALPHA * (g_pendingCmdW - g_txCmdW);
+  // 闂備胶鍎甸弲娑㈡偤閵娧勬殰閻庢稒蓱婵挳鎮归幁鎺戝闁哄棗绻橀弻娑樜熼悡搴㈢€诲銈庡亝閸旀瑥鐣烽妸鈺佺闁圭儤鎸歌闂備胶顭堥敃锕傚Υ鐎ｎ剚顫曟繝闈涙川閳绘梻鈧箍鍎遍幊宥囧垝閸偒娈介柣鎰煐閻濐亞绱掗鍡涙鐎垫澘瀚板畷鐔碱敇閻斿皝鍋?
+  // Keep TX command aligned with latest pending command.
+  g_txCmdV = g_pendingCmdV;
+  g_txCmdW = g_pendingCmdW;
 
   if (sendDriveNoAck(g_txCmdV, g_txCmdW)) {
     g_lastCmdV = g_txCmdV;
@@ -468,6 +524,7 @@ static void serviceStaConnectState(uint32_t now) {
   }
 }
 
+// -------------------- Web UI --------------------
 // -------------------- Web UI --------------------
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -591,8 +648,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <script>
 const V = 0.78;
 const W = 0.52;
-const HOLD_KEEP_MS = 100;
-const REQ_TIMEOUT_MS = 260;
+const HOLD_KEEP_MS = 160;
+const REQ_TIMEOUT_MS = 900;
 let inflight = false;
 let queued = null;
 let lastSentV = 99, lastSentW = 99;
@@ -600,6 +657,7 @@ let lastSentMs = 0;
 let holdV = 0, holdW = 0;
 let holdActive = false;
 let holdTimer = null;
+let wifiPollDiv = 0;
 
 function fmt(x){ return (Math.round(x*100)/100).toFixed(2); }
 function action(v,w){
@@ -719,18 +777,20 @@ async function poll(){
       document.getElementById('batt').textContent=`${j.vbatt.toFixed(2)}V ${j.percent.toFixed(1)}%`;
     }
   }catch(_){ }
-  try{
-    const w=await (await fetch('/wifi_status',{cache:'no-store'})).json();
-    document.getElementById('apInfo').textContent = `${w.ap_ssid} (${w.ap_ip})`;
-    document.getElementById('staState').textContent = `${w.sta_status} ${w.sta_connected?'(已连接)':'(未连接)'}`;
-    document.getElementById('staState').className = `value ${w.sta_connected?'ok':'warn'}`;
-    document.getElementById('staIp').textContent = w.sta_ip || '--';
-    document.getElementById('chInfo').textContent = `CH${w.channel} / ${w.ap_clients}台`;
-    document.getElementById('wifiHint').textContent = w.sta_connected
-      ? '提示：已联网。请在同一局域网通过 STA IP 访问。'
-      : '提示：当 STA 成功联网后，AP 可能切到同信道，手机可能短暂重连。';
-  }catch(_){ }
-  setTimeout(poll, 1000);
+  if ((wifiPollDiv++ % 3) === 0) {
+    try{
+      const w=await (await fetch('/wifi_status',{cache:'no-store'})).json();
+      document.getElementById('apInfo').textContent = `${w.ap_ssid} (${w.ap_ip})`;
+      document.getElementById('staState').textContent = `${w.sta_status} ${w.sta_connected?'(已连接)':'(未连接)'}`;
+      document.getElementById('staState').className = `value ${w.sta_connected?'ok':'warn'}`;
+      document.getElementById('staIp').textContent = w.sta_ip || '--';
+      document.getElementById('chInfo').textContent = `CH${w.channel} / ${w.ap_clients}台`;
+      document.getElementById('wifiHint').textContent = w.sta_connected
+        ? '提示：已联网。请在同一局域网通过 STA IP 访问。'
+        : '提示：当 STA 成功联网后，AP 可能切到同信道，手机可能短暂重连。';
+    }catch(_){ }
+  }
+  setTimeout(poll, 1500);
 }
 poll();
 </script>
@@ -753,7 +813,17 @@ static void handleCmd() {
   float w = clampf(server.arg("w").toFloat(), -1.0f, 1.0f);
   uint32_t now = millis();
 
-  // 楂橀閲嶅鍛戒护鐩存帴杩斿洖锛岄伩鍏嶄覆鍙ｅ彂閫佸崰婊″鑷?Wi-Fi 鎶栧姩
+  if (fabsf(v - g_lastHttpCmdV) < 0.001f &&
+      fabsf(w - g_lastHttpCmdW) < 0.001f &&
+      (uint32_t)(now - g_lastHttpRxMs) < 120u) {
+    server.send(200, "text/plain", "OK");
+    return;
+  }
+  g_lastHttpCmdV = v;
+  g_lastHttpCmdW = w;
+  g_lastHttpRxMs = now;
+
+  // Drop duplicate commands in a short window to reduce Wi-Fi/UART load.
   if (fabsf(v - g_lastCmdV) < 0.001f &&
       fabsf(w - g_lastCmdW) < 0.001f &&
       (uint32_t)(now - g_lastCmdTxMs) < CMD_DUP_FILTER_MS) {
@@ -789,12 +859,13 @@ static void handleStatus() {
 }
 
 static void handleHealth() {
-  char buf[360];
+  char buf[520];
   uint32_t age = (g_status.lastRxMs == 0) ? 0xFFFFFFFFu : (millis() - g_status.lastRxMs);
   snprintf(buf, sizeof(buf),
            "{\"last_cmd_v\":%.3f,\"last_cmd_w\":%.3f,\"last_ack_ready\":%s,"
            "\"last_ack_nack\":%s,\"last_ack_err\":%u,\"status_age_ms\":%lu,"
-           "\"reset_reason\":\"%s\",\"free_heap\":%lu}",
+           "\"reset_reason\":\"%s\",\"free_heap\":%lu,"
+           "\"uart_tx_timeouts\":%lu,\"loop_max_gap_ms\":%lu,\"uptime_ms\":%lu}",
            g_lastCmdV,
            g_lastCmdW,
            g_ack.ready ? "true" : "false",
@@ -802,7 +873,10 @@ static void handleHealth() {
            (unsigned)g_ack.err,
            (unsigned long)age,
            g_resetReason,
-           (unsigned long)ESP.getFreeHeap());
+           (unsigned long)ESP.getFreeHeap(),
+           (unsigned long)g_uartTxTimeouts,
+           (unsigned long)g_loopMaxGapMs,
+           (unsigned long)millis());
   server.send(200, "application/json", buf);
 }
 
@@ -871,8 +945,10 @@ static void handleWifiStatus() {
 }
 
 static void initWifiStack() {
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
-  WiFi.setOutputPower(7.0f);  // 适中功率，平衡稳定性和距离
+  WiFi.setOutputPower(8.0f);
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASS);
 }
@@ -917,6 +993,11 @@ void loop() {
   yield();
 
   uint32_t now = millis();
+  if (g_loopLastMs != 0u) {
+    uint32_t gap = (uint32_t)(now - g_loopLastMs);
+    if (gap > g_loopMaxGapMs) g_loopMaxGapMs = gap;
+  }
+  g_loopLastMs = now;
   applyPendingStopIfIdle(now);
   serviceDriveTx(now);
   serviceStatusPoll(now);

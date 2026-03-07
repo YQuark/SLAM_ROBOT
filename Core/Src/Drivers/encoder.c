@@ -12,11 +12,13 @@ extern TIM_HandleTypeDef htim5;
 
 Encoder_t g_encoders[ENC_COUNT] =
 {
-    { &htim2, 0, 0, 0.0f, +1 },  /* ENC_L1 : TIM2 (32-bit counter) */
-    { &htim3, 0, 0, 0.0f, +1 },  /* ENC_L2 : TIM3 (16-bit counter) */
-    { &htim4, 0, 0, 0.0f, +1 },  /* ENC_R1 : TIM4 (16-bit counter) */
-    { &htim5, 0, 0, 0.0f, +1 },  /* ENC_R2 : TIM5 (32-bit counter) */
+    { &htim2, 0, 0, 0.0f, ENC_L1_POLARITY },  /* ENC_L1 : TIM2 (32-bit counter) */
+    { &htim3, 0, 0, 0.0f, ENC_L2_POLARITY },  /* ENC_L2 : TIM3 (16-bit counter) */
+    { &htim4, 0, 0, 0.0f, ENC_R1_POLARITY },  /* ENC_R1 : TIM4 (16-bit counter) */
+    { &htim5, 0, 0, 0.0f, ENC_R2_POLARITY },  /* ENC_R2 : TIM5 (32-bit counter) */
 };
+
+static float s_vel_bias_cps[ENC_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 /* 统一用“低16位差分”做溢出处理：适用于 16 位定时器，也适用于 32 位定时器的低16位。
  * 控制周期较短时，这个差分不会跨越 32768 counts 的半周，因此符号差分可靠。
@@ -64,6 +66,7 @@ void Encoder_Init(void)
 
         /* 读一次当前低16位作为起始点，避免第一帧 diff 异常 */
         e->last_cnt = read_cnt16(e->htim);
+        s_vel_bias_cps[i] = 0.0f;
 
         /* 只在第一次调用时输出调试信息（通过静态变量） */
         if (!debug_once) {
@@ -71,6 +74,61 @@ void Encoder_Init(void)
             debug_once = 1;
         }
     }
+}
+
+uint8_t Encoder_CalibrateStatic(uint32_t duration_ms, uint32_t sample_interval_ms)
+{
+    if (duration_ms < 50u) {
+        duration_ms = 50u;
+    }
+    if (sample_interval_ms == 0u) {
+        sample_interval_ms = 5u;
+    }
+    if (sample_interval_ms > duration_ms) {
+        sample_interval_ms = duration_ms;
+    }
+
+    uint32_t start_ms = HAL_GetTick();
+    uint32_t last_ms = start_ms;
+    int32_t sum_counts[ENC_COUNT] = {0, 0, 0, 0};
+    uint8_t all_ok = 1u;
+
+    for (int i = 0; i < ENC_COUNT; ++i) {
+        g_encoders[i].last_cnt = read_cnt16(g_encoders[i].htim);
+        s_vel_bias_cps[i] = 0.0f;
+    }
+
+    while ((HAL_GetTick() - start_ms) < duration_ms) {
+        uint32_t now_ms = HAL_GetTick();
+        if ((now_ms - last_ms) < sample_interval_ms) {
+            continue;
+        }
+        last_ms = now_ms;
+
+        for (int i = 0; i < ENC_COUNT; ++i) {
+            Encoder_t *e = &g_encoders[i];
+            uint16_t now16 = read_cnt16(e->htim);
+            int16_t d16 = diff16(now16, e->last_cnt);
+            e->last_cnt = now16;
+            sum_counts[i] += (int32_t)d16 * (int32_t)e->polarity;
+        }
+    }
+
+    float dur_s = (float)duration_ms / 1000.0f;
+    for (int i = 0; i < ENC_COUNT; ++i) {
+        float bias = (dur_s > 0.0f) ? ((float)sum_counts[i] / dur_s) : 0.0f;
+        if (fabsf(bias) > ENC_BOOT_CALIB_MAX_BIAS_CPS) {
+            /* 校准期有明显转动或接线异常，避免把真实运动当作零偏 */
+            s_vel_bias_cps[i] = 0.0f;
+            all_ok = 0u;
+        } else {
+            s_vel_bias_cps[i] = bias;
+        }
+        g_encoders[i].vel_cps = 0.0f;
+        g_encoders[i].last_cnt = read_cnt16(g_encoders[i].htim);
+    }
+
+    return all_ok;
 }
 
 void Encoder_UpdateAll(float dt)
@@ -93,6 +151,7 @@ void Encoder_UpdateAll(float dt)
         e->pos += (int32_t)d16;
 
         float raw = ((float)d16 * (float)e->polarity) / dt;
+        raw -= s_vel_bias_cps[i];
 
         /* 毛刺保护：速度离谱直接丢弃 */
         if (fabsf(raw) > cps_limit) {

@@ -10,6 +10,21 @@ extern "C" {
 
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
+#include <stddef.h>
+
+/* 编码器方向极性（+1 保持，-1 取反），用于让“车体前进”对应正速度。 */
+#ifndef ENC_L1_POLARITY
+#define ENC_L1_POLARITY (+1)
+#endif
+#ifndef ENC_L2_POLARITY
+#define ENC_L2_POLARITY (-1)
+#endif
+#ifndef ENC_R1_POLARITY
+#define ENC_R1_POLARITY (-1)
+#endif
+#ifndef ENC_R2_POLARITY
+#define ENC_R2_POLARITY (+1)
+#endif
 
     /* 单个编码器状态 */
     typedef struct
@@ -39,6 +54,9 @@ extern "C" {
 
     /* 每个控制周期调用一次，dt 为秒，内部更新 pos 和 vel_cps */
     void Encoder_UpdateAll(float dt);
+
+    /* 开机静止校准：估计零速偏置（counts/s）并写入补偿 */
+    uint8_t Encoder_CalibrateStatic(uint32_t duration_ms, uint32_t sample_interval_ms);
 
     /* 获取编码器调试信息 */
     void Encoder_GetDebugInfo(char *buf, size_t size);

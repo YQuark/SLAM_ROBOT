@@ -49,6 +49,7 @@ static float s_w_ref_filt = 0.0f;
 static float s_outer_i_v = 0.0f;
 static float s_outer_i_w = 0.0f;
 static float s_last_u[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+static uint16_t s_start_assist_ticks[4] = {0u, 0u, 0u, 0u};
 
 /* ---------------- 辅助函数 ---------------- */
 static inline float clampf(float x, float lo, float hi)
@@ -115,6 +116,7 @@ static void reset_runtime_states(void)
     s_yaw_hold_active = 0;
     for (int i = 0; i < 4; ++i) {
         s_last_u[i] = 0.0f;
+        s_start_assist_ticks[i] = 0u;
     }
 }
 
@@ -224,16 +226,22 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
     uint8_t ps2_ok = (s_ps2_ts != 0u) && ((now_ms - s_ps2_ts) <= CMD_TIMEOUT_MS);
     uint8_t pc_ok = (s_pc_ts != 0u) && ((now_ms - s_pc_ts) <= CMD_TIMEOUT_MS);
     uint8_t esp_ok = (s_esp_ts != 0u) && ((now_ms - s_esp_ts) <= CMD_TIMEOUT_MS);
+    uint32_t best_ts = 0u;
 
-    if (ps2_ok) {
+    /* 超时窗口内最新命令优先，避免固定优先级抢占 */
+    if (ps2_ok && s_ps2_ts >= best_ts) {
         *v = s_ps2_v;
         *w = s_ps2_w;
         *src = CMD_SRC_PS2;
-    } else if (pc_ok) {
+        best_ts = s_ps2_ts;
+    }
+    if (pc_ok && s_pc_ts >= best_ts) {
         *v = s_pc_v;
         *w = s_pc_w;
         *src = CMD_SRC_PC;
-    } else if (esp_ok) {
+        best_ts = s_pc_ts;
+    }
+    if (esp_ok && s_esp_ts >= best_ts) {
         *v = s_esp_v;
         *w = s_esp_w;
         *src = CMD_SRC_ESP;
@@ -275,6 +283,8 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     cmd_source_t src = CMD_SRC_NONE;
     float ref_cps[4];
     float u_cmd[4];
+    const uint16_t assist_hold_ticks =
+        (uint16_t)((START_ASSIST_HOLD_MS + CTRL_PERIOD_MS - 1u) / CTRL_PERIOD_MS);
 
     choose_cmd(now_ms, &v_cmd, &w_cmd, &src);
 
@@ -292,7 +302,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         s_prev_src = src;
         s_src_switch_ts = now_ms;
     }
-    s_st.src_transition_active = ((now_ms - s_src_switch_ts) <= SRC_SWITCH_SMOOTH_MS) ? 1u : 0u;
+    s_st.src_transition_active = 0u;
 
     s_st.v_cmd = v_cmd;
     s_st.w_cmd = w_cmd;
@@ -300,7 +310,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 
     update_observer(dt);
 
-    s_st.mode_transition_active = ((now_ms - s_mode_switch_ts) <= MODE_TRANSITION_MS) ? 1u : 0u;
+    s_st.mode_transition_active = 0u;
 
     if (s_mode == MODE_IDLE) {
         stop_outputs_and_observe();
@@ -310,18 +320,19 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     {
         float v_rate = V_SLEW_MAX;
         float w_rate = W_SLEW_MAX;
-        if (s_st.src_transition_active) {
-            v_rate *= 0.6f;
-            w_rate *= 0.6f;
+        /* 目标为 0 时立即归零，不经过 slew */
+        if (fabsf(v_cmd) < 0.01f) {
+            s_v_ref_filt = 0.0f;
+        } else {
+            s_v_ref_filt = slew_limit(s_v_ref_filt, v_cmd, v_rate, dt);
         }
-        s_v_ref_filt = slew_limit(s_v_ref_filt, v_cmd, v_rate, dt);
-        s_w_ref_filt = slew_limit(s_w_ref_filt, w_cmd, w_rate, dt);
+        if (fabsf(w_cmd) < 0.01f) {
+            s_w_ref_filt = 0.0f;
+        } else {
+            s_w_ref_filt = slew_limit(s_w_ref_filt, w_cmd, w_rate, dt);
+        }
     }
 
-    if (s_st.mode_transition_active) {
-        s_v_ref_filt = clampf(s_v_ref_filt, -MODE_TRANSITION_MAX_CMD, MODE_TRANSITION_MAX_CMD);
-        s_w_ref_filt = clampf(s_w_ref_filt, -MODE_TRANSITION_MAX_CMD, MODE_TRANSITION_MAX_CMD);
-    }
 
     s_st.v_ref_filt = s_v_ref_filt;
     s_st.w_ref_filt = s_w_ref_filt;
@@ -351,38 +362,15 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     {
         float v_ref = s_v_ref_filt;
         float w_ref = s_w_ref_filt;
-        float w_ctrl = w_ref;
 
-        if (CTRL_USE_YAW_HOLD && fabsf(w_ref) < YAW_HOLD_W_THRESH && fabsf(v_ref) > 0.05f) {
-            if (!s_yaw_hold_active) {
-                s_yaw_hold_active = 1u;
-                s_yaw_hold_ref = s_st.yaw_est;
-            }
-            w_ctrl += YAW_HOLD_KP * (s_yaw_hold_ref - s_st.yaw_est);
-        } else {
-            s_yaw_hold_active = 0u;
-        }
+        /* Simplified: keep only v/w -> wheel speed mapping. */
+        s_outer_i_v = 0.0f;
+        s_outer_i_w = 0.0f;
+        s_yaw_hold_active = 0u;
 
-        if (s_st.imu_enabled && s_st.imu_valid && fabsf(w_ctrl) < IMU_DAMP_ACTIVE_W) {
-            w_ctrl -= IMU_DAMP_K * s_imu_last.gz_dps;
-        }
-
-        if (CTRL_USE_DUAL_LOOP) {
-            float e_v = v_ref - s_st.v_est;
-            float e_w = w_ctrl - s_st.w_est;
-
-            s_outer_i_v += OUTER_V_KI * e_v * dt;
-            s_outer_i_w += OUTER_W_KI * e_w * dt;
-            s_outer_i_v = clampf(s_outer_i_v, -OUTER_INT_LIM, OUTER_INT_LIM);
-            s_outer_i_w = clampf(s_outer_i_w, -OUTER_INT_LIM, OUTER_INT_LIM);
-
-            v_ref = clampf(v_ref + OUTER_V_KP * e_v + s_outer_i_v, -1.0f, 1.0f);
-            w_ctrl = clampf(w_ctrl + OUTER_W_KP * e_w + s_outer_i_w, -1.0f, 1.0f);
-        }
-
-        ref_cps[ENC_L1] = clampf(v_ref - w_ctrl, -1.0f, 1.0f) * MAX_CPS;
+        ref_cps[ENC_L1] = clampf(v_ref - w_ref, -1.0f, 1.0f) * MAX_CPS;
         ref_cps[ENC_L2] = ref_cps[ENC_L1];
-        ref_cps[ENC_R1] = clampf(v_ref + w_ctrl, -1.0f, 1.0f) * MAX_CPS;
+        ref_cps[ENC_R1] = clampf(v_ref + w_ref, -1.0f, 1.0f) * MAX_CPS;
         ref_cps[ENC_R2] = ref_cps[ENC_R1];
     }
 
@@ -395,21 +383,43 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         s_st.ref_cps[i] = ref;
         s_st.meas_cps[i] = meas;
 
-        if (fabsf(meas) > (1.5f * MAX_CPS)) {
+        /* 低速或停止时清零积分与输出，避免抖动 */
+        if (fabsf(ref) < (LOW_SPEED_REF_RATIO * MAX_CPS)) {
+            s_pi[i].integral = 0.0f;
+            s_last_u[i] = 0.0f;
+            s_start_assist_ticks[i] = 0u;
+            u = 0.0f;
+        } else if (fabsf(meas) > (1.5f * MAX_CPS)) {
+            /* 异常速度时强制清零 */
             reset_pi();
             u = 0.0f;
-        } else if (fabsf(ref) < (LOW_SPEED_REF_RATIO * MAX_CPS)) {
-            s_pi[i].integral = 0.0f;
-            u = 0.0f;
+            s_last_u[i] = 0.0f;
+            s_start_assist_ticks[i] = 0u;
         } else {
             if (CTRL_USE_STATIC_FF && fabsf(ref) > 1.0f) {
                 ff = U_STATIC_FF * signf_nonzero(ref);
             }
             u = PI_Update_AW(&s_pi[i], ref - meas, ff, dt);
+            u = slew_limit(s_last_u[i], u, U_SLEW_MAX, dt);
+            s_last_u[i] = u;
+
+#if START_ASSIST_ENABLE
+            if (fabsf(ref) > (START_ASSIST_REF_RATIO * MAX_CPS) &&
+                fabsf(meas) < (START_ASSIST_MEAS_RATIO * MAX_CPS)) {
+                s_start_assist_ticks[i] = assist_hold_ticks;
+            }
+            if (s_start_assist_ticks[i] > 0u) {
+                float assist_u = START_ASSIST_MIN_U * signf_nonzero(ref);
+                if (fabsf(u) < START_ASSIST_MIN_U) {
+                    u = assist_u;
+                    s_pi[i].integral = 0.0f;
+                    s_last_u[i] = u;
+                }
+                s_start_assist_ticks[i]--;
+            }
+#endif
         }
 
-        u = slew_limit(s_last_u[i], u, U_SLEW_MAX, dt);
-        s_last_u[i] = u;
         u_cmd[i] = u;
     }
 
@@ -426,3 +436,4 @@ const RobotControlState_t *RobotControl_GetState(void)
 {
     return &s_st;
 }
+

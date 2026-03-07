@@ -4,6 +4,7 @@
 
 #include "robot_config.h"
 #include "robot_control.h"
+#include "encoder.h"
 
 #ifndef LINK_PROTO_VER
 #define LINK_PROTO_VER 0x01u
@@ -267,6 +268,12 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     put_u16le(&out[p], (uint16_t)gz_x10); p += 2;
     out[p++] = st->imu_enabled;
     out[p++] = st->imu_valid;
+
+    /* 编码器速度数据 (4轮) */
+    for (int i = 0; i < ENC_COUNT; i++) {
+        int16_t vel = clamp_i16_from_f(g_encoders[i].vel_cps);
+        put_u16le(&out[p], (uint16_t)vel); p += 2;
+    }
 
     *out_len = p;
 }
