@@ -53,10 +53,11 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED_Pin|PS2_CLK_Pin|PS2_CMD_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(PS2_CS_GPIO_Port, PS2_CS_Pin, GPIO_PIN_RESET);
+  /* PS2 idle levels: CMD/CLK/CS should stay high when bus is idle */
+  HAL_GPIO_WritePin(GPIOA, PS2_CLK_Pin|PS2_CMD_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(PS2_CS_GPIO_Port, PS2_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, L1_DIR_Pin|L2_DIR_Pin|R1_DIR_Pin|R2_DIR_Pin, GPIO_PIN_RESET);

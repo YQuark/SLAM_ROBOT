@@ -1,195 +1,300 @@
 #include "ps2.h"
 
-/*-----------------------------------------
-   微秒延时：使用 DWT 周期计数器
-------------------------------------------*/
+#define PS2_FRAME_LEN   9u
+#define PS2_RETRY_LIMIT 3u
+
+/* Use DWT cycle counter for stable microsecond delays. */
 static void DWT_DelayInit(void)
 {
-    if (!(CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk))
+    if (!(CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk)) {
         CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-
-    DWT->CYCCNT = 0;
+    }
+    DWT->CYCCNT = 0u;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 static void delay_us(uint32_t us)
 {
-    uint32_t clk = SystemCoreClock / 1000000;
-    uint32_t start = DWT->CYCCNT;
-    while (DWT->CYCCNT - start < us * clk);
+    const uint32_t clk_mhz = SystemCoreClock / 1000000u;
+    const uint32_t start = DWT->CYCCNT;
+    while ((DWT->CYCCNT - start) < (us * clk_mhz)) {
+    }
 }
 
-/*-----------------------------------------
-   引脚操作定义
-------------------------------------------*/
-#define PS2_DI()   (HAL_GPIO_ReadPin(PS2_DAT_GPIO_Port, PS2_DAT_Pin)==GPIO_PIN_SET)
+/* CMD/DAT can be auto-swapped in software for boards with reversed wiring. */
+static uint8_t s_swap_cmd_dat = 0u;
 
-#define PS2_CMD_HIGH() HAL_GPIO_WritePin(PS2_CMD_GPIO_Port, PS2_CMD_Pin, GPIO_PIN_SET)
-#define PS2_CMD_LOW()  HAL_GPIO_WritePin(PS2_CMD_GPIO_Port, PS2_CMD_Pin, GPIO_PIN_RESET)
+static inline GPIO_TypeDef *ps2_cmd_port(void)
+{
+    return s_swap_cmd_dat ? PS2_DAT_GPIO_Port : PS2_CMD_GPIO_Port;
+}
 
-#define PS2_CS_HIGH()  HAL_GPIO_WritePin(PS2_CS_GPIO_Port,  PS2_CS_Pin, GPIO_PIN_SET)
-#define PS2_CS_LOW()   HAL_GPIO_WritePin(PS2_CS_GPIO_Port,  PS2_CS_Pin, GPIO_PIN_RESET)
+static inline uint16_t ps2_cmd_pin(void)
+{
+    return s_swap_cmd_dat ? PS2_DAT_Pin : PS2_CMD_Pin;
+}
 
-#define PS2_CLK_HIGH() HAL_GPIO_WritePin(PS2_CLK_GPIO_Port, PS2_CLK_Pin, GPIO_PIN_SET)
-#define PS2_CLK_LOW()  HAL_GPIO_WritePin(PS2_CLK_GPIO_Port, PS2_CLK_Pin, GPIO_PIN_RESET)
+static inline GPIO_TypeDef *ps2_dat_port(void)
+{
+    return s_swap_cmd_dat ? PS2_CMD_GPIO_Port : PS2_DAT_GPIO_Port;
+}
 
-/* PS2 指令 */
-static const uint8_t PS2_cmd[9] = {0x01,0x42,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-static uint8_t PS2_buf[9] = {0};
+static inline uint16_t ps2_dat_pin(void)
+{
+    return s_swap_cmd_dat ? PS2_CMD_Pin : PS2_DAT_Pin;
+}
+
+static inline uint8_t PS2_DI(void)
+{
+    return HAL_GPIO_ReadPin(ps2_dat_port(), ps2_dat_pin()) == GPIO_PIN_SET;
+}
+
+static inline void PS2_CMD_HIGH(void)
+{
+    HAL_GPIO_WritePin(ps2_cmd_port(), ps2_cmd_pin(), GPIO_PIN_SET);
+}
+
+static inline void PS2_CMD_LOW(void)
+{
+    HAL_GPIO_WritePin(ps2_cmd_port(), ps2_cmd_pin(), GPIO_PIN_RESET);
+}
+
+static inline void PS2_CS_HIGH(void)
+{
+    HAL_GPIO_WritePin(PS2_CS_GPIO_Port, PS2_CS_Pin, GPIO_PIN_SET);
+}
+
+static inline void PS2_CS_LOW(void)
+{
+    HAL_GPIO_WritePin(PS2_CS_GPIO_Port, PS2_CS_Pin, GPIO_PIN_RESET);
+}
+
+static inline void PS2_CLK_HIGH(void)
+{
+    HAL_GPIO_WritePin(PS2_CLK_GPIO_Port, PS2_CLK_Pin, GPIO_PIN_SET);
+}
+
+static inline void PS2_CLK_LOW(void)
+{
+    HAL_GPIO_WritePin(PS2_CLK_GPIO_Port, PS2_CLK_Pin, GPIO_PIN_RESET);
+}
+
+static void PS2_ConfigurePins(void)
+{
+    GPIO_InitTypeDef init = {0};
+
+    init.Pin = ps2_dat_pin();
+    init.Mode = GPIO_MODE_INPUT;
+    init.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(ps2_dat_port(), &init);
+
+    init.Mode = GPIO_MODE_OUTPUT_PP;
+    init.Pull = GPIO_PULLUP;
+    init.Speed = GPIO_SPEED_FREQ_HIGH;
+    init.Pin = ps2_cmd_pin();
+    HAL_GPIO_Init(ps2_cmd_port(), &init);
+
+    init.Pin = PS2_CLK_Pin;
+    HAL_GPIO_Init(PS2_CLK_GPIO_Port, &init);
+
+    init.Pin = PS2_CS_Pin;
+    HAL_GPIO_Init(PS2_CS_GPIO_Port, &init);
+
+    PS2_CMD_HIGH();
+    PS2_CLK_HIGH();
+    PS2_CS_HIGH();
+}
+
+static const uint8_t k_poll_frame[PS2_FRAME_LEN] = {
+    0x01u, 0x42u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u
+};
+static uint8_t s_rx_buf[PS2_FRAME_LEN] = {0};
 
 static uint8_t PS2_RW(uint8_t tx);
+
 static void PS2_Send(const uint8_t *tx, uint8_t *rx, uint8_t len)
 {
     PS2_CS_LOW();
-    delay_us(20);
+    delay_us(20u);
 
-    for (uint8_t i = 0; i < len; i++)
-    {
-        uint8_t val = PS2_RW(tx[i]);
-        if (rx)
-        {
-            rx[i] = val;
+    for (uint8_t i = 0u; i < len; ++i) {
+        uint8_t v = PS2_RW(tx[i]);
+        if (rx != NULL) {
+            rx[i] = v;
         }
-        delay_us(16);
+        delay_us(16u);
     }
 
     PS2_CS_HIGH();
-    delay_us(20);
+    delay_us(20u);
 }
 
-void PS2_ConfigAnalog(void)
+static uint8_t PS2_HandshakeOK(const uint8_t *rx)
 {
-    static const uint8_t enter_cfg[] = {0x01, 0x43, 0x00, 0x01, 0x00};
-    static const uint8_t set_analog[] = {0x01, 0x44, 0x00, 0x01, 0x03};
-    static const uint8_t enable_motor[] = {0x01, 0x4D, 0x00, 0x00, 0x01};
-    static const uint8_t exit_cfg[] = {0x01, 0x43, 0x00, 0x00, 0x5A};
-    
-    /* 增加延时，确保PS2手柄有足够时间响应 */
-    PS2_Send(enter_cfg, NULL, sizeof(enter_cfg));
-    HAL_Delay(10);  /* 从1ms增加到10ms */
-    
-    PS2_Send(set_analog, NULL, sizeof(set_analog));
-    HAL_Delay(10);  /* 从1ms增加到10ms */
-    
-    PS2_Send(enable_motor, NULL, sizeof(enable_motor));
-    HAL_Delay(10);  /* 从1ms增加到10ms */
-    
-    PS2_Send(exit_cfg, NULL, sizeof(exit_cfg));
-    HAL_Delay(10);  /* 从1ms增加到10ms */
+    return (rx[1] != 0xFFu) && (rx[2] == 0x5Au);
+}
+
+static uint8_t PS2_ModeIsAnalog(uint8_t mode)
+{
+    return (mode == 0x73u) || (mode == 0x79u);
 }
 
 static uint8_t PS2_ModeValid(uint8_t mode)
 {
-    return (mode == 0x41u) || (mode == 0x73u) || (mode == 0x79u);
+    return (mode == 0x41u) || PS2_ModeIsAnalog(mode);
 }
-/*-----------------------------------------
-      初始化（DATA 输入，CMD/CLK/CS 输出）
-------------------------------------------*/
+
+static void PS2_ShortPoll(void)
+{
+    static const uint8_t short_poll[5] = {0x01u, 0x42u, 0x00u, 0x00u, 0x00u};
+    PS2_Send(short_poll, NULL, (uint8_t)sizeof(short_poll));
+}
+
+/* Follow WHEELTEC sequence: short poll x3 -> enter cfg -> analog -> vibration -> exit cfg. */
+static void PS2_ConfigAnalog(void)
+{
+    static const uint8_t enter_cfg[PS2_FRAME_LEN] = {
+        0x01u, 0x43u, 0x00u, 0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u
+    };
+    static const uint8_t set_analog[PS2_FRAME_LEN] = {
+        0x01u, 0x44u, 0x00u, 0x01u, 0x03u, 0x00u, 0x00u, 0x00u, 0x00u
+    };
+    static const uint8_t enable_motor[5] = {0x01u, 0x4Du, 0x00u, 0x00u, 0x01u};
+    static const uint8_t exit_cfg[PS2_FRAME_LEN] = {
+        0x01u, 0x43u, 0x00u, 0x00u, 0x5Au, 0x5Au, 0x5Au, 0x5Au, 0x5Au
+    };
+
+    PS2_ShortPoll();
+    PS2_ShortPoll();
+    PS2_ShortPoll();
+    HAL_Delay(2u);
+
+    PS2_Send(enter_cfg, NULL, (uint8_t)sizeof(enter_cfg));
+    HAL_Delay(2u);
+
+    PS2_Send(set_analog, NULL, (uint8_t)sizeof(set_analog));
+    HAL_Delay(2u);
+
+    PS2_Send(enable_motor, NULL, (uint8_t)sizeof(enable_motor));
+    HAL_Delay(2u);
+
+    PS2_Send(exit_cfg, NULL, (uint8_t)sizeof(exit_cfg));
+    HAL_Delay(2u);
+}
+
+static uint8_t PS2_ProbeLink(uint8_t require_analog)
+{
+    uint8_t rx[PS2_FRAME_LEN] = {0};
+    for (uint8_t i = 0u; i < 6u; ++i) {
+        PS2_Send(k_poll_frame, rx, (uint8_t)sizeof(rx));
+        if (PS2_HandshakeOK(rx) && (!require_analog || PS2_ModeIsAnalog(rx[1]))) {
+            return 1u;
+        }
+        HAL_Delay(2u);
+    }
+    return 0u;
+}
+
+static uint8_t PS2_InitOneMapping(void)
+{
+    for (uint8_t i = 0u; i < PS2_RETRY_LIMIT; ++i) {
+        PS2_ConfigAnalog();
+        if (PS2_ProbeLink(1u)) {
+            return 1u;
+        }
+    }
+    return PS2_ProbeLink(0u);
+}
+
 void PS2_Init(void)
 {
     DWT_DelayInit();
 
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    /* DATA 输入 */
-    GPIO_InitStruct.Pin = PS2_DAT_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(PS2_DAT_GPIO_Port, &GPIO_InitStruct);
-
-    /* CMD / CLK / CS 输出 */
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-
-    GPIO_InitStruct.Pin = PS2_CMD_Pin;
-    HAL_GPIO_Init(PS2_CMD_GPIO_Port, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = PS2_CLK_Pin;
-    HAL_GPIO_Init(PS2_CLK_GPIO_Port, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = PS2_CS_Pin;
-    HAL_GPIO_Init(PS2_CS_GPIO_Port, &GPIO_InitStruct);
-
-    /* 默认状态 */
-    PS2_CMD_HIGH();
-    PS2_CLK_HIGH();
-    PS2_CS_HIGH();
-    /* 进入模拟模式，避免只读到 0xFF */
-    PS2_ConfigAnalog();
-}
-
-
-/*-----------------------------------------
-   PS2 单字节读写（时序精确）
-------------------------------------------*/
-static uint8_t PS2_RW(uint8_t tx)
-{
-    uint8_t ref;
-    uint8_t rx = 0;
-
-    for (ref = 0x01; ref != 0; ref <<= 1)
-    {
-        // 1. 先准备好要发送的数据 (CMD)
-        if (tx & ref) PS2_CMD_HIGH();
-        else          PS2_CMD_LOW();
-
-        // 给一点点建立时间（可选，为了稳健）
-        // delay_us(1);
-
-        // 2. 拉低时钟：通知接收器“我要开始传输这一位了”
-        PS2_CLK_LOW();
-
-        // 3. 延时：等待数据稳定
-        // 手册说时钟周期约 30-50us，半周期给 10-15us 足够
-        delay_us(10);
-
-        // 4. 【关键修正】在时钟低电平期间读取 DAT
-        // 此时数据是最稳定的
-        if (PS2_DI())
-        {
-            rx |= ref;
-        }
-
-        // 5. 拉高时钟：结束这一位
-        PS2_CLK_HIGH();
-
-        // 6. 延时：保持高电平一段时间
-        delay_us(10);
+    s_swap_cmd_dat = 0u;
+    PS2_ConfigurePins();
+    if (PS2_InitOneMapping()) {
+        return;
     }
 
-    PS2_CMD_HIGH(); // 释放 CMD
+    s_swap_cmd_dat = 1u;
+    PS2_ConfigurePins();
+    (void)PS2_InitOneMapping();
+}
+
+/* Single-byte transfer, matching the timing style in WHEELTEC PSTWO demo. */
+static uint8_t PS2_RW(uint8_t tx)
+{
+    uint8_t rx = 0u;
+    for (uint8_t ref = 0x01u; ref != 0u; ref <<= 1u) {
+        if ((tx & ref) != 0u) {
+            PS2_CMD_HIGH();
+        } else {
+            PS2_CMD_LOW();
+        }
+
+        PS2_CLK_HIGH();
+        delay_us(5u);
+        PS2_CLK_LOW();
+        delay_us(5u);
+        PS2_CLK_HIGH();
+
+        if (PS2_DI()) {
+            rx |= ref;
+        }
+    }
+
+    delay_us(16u);
+    PS2_CMD_HIGH();
     return rx;
 }
 
-/*-----------------------------------------
-   主扫描函数（外部直接调用）
-------------------------------------------*/
-static uint8_t reconfig_count = 0;
-static uint8_t first_invalid = 1;
+static uint8_t s_reconfig_count = 0u;
 
 uint8_t PS2_Scan(PS2_TypeDef *ps2)
 {
-    PS2_Send(PS2_cmd, PS2_buf, sizeof(PS2_cmd));
-
-    ps2->mode     = PS2_buf[1];
-    ps2->btn1     = ~PS2_buf[3];
-    ps2->btn2     = ~PS2_buf[4];
-    ps2->RJoy_LR  = PS2_buf[5];
-    ps2->RJoy_UD  = PS2_buf[6];
-    ps2->LJoy_LR  = PS2_buf[7];
-    ps2->LJoy_UD  = PS2_buf[8];
-
-    if (!PS2_ModeValid(ps2->mode)) {
-        /* 只在前3次检测到无效模式时尝试重新配置 */
-        if (reconfig_count < 3) {
-            PS2_ConfigAnalog();
-            reconfig_count++;
-        }
-        return 0;
+    if (ps2 == NULL) {
+        return 0u;
     }
 
-    /* 重置配置计数器 */
-    reconfig_count = 0;
-    first_invalid = 1;
-    return 1;
+    PS2_Send(k_poll_frame, s_rx_buf, (uint8_t)sizeof(k_poll_frame));
+
+    ps2->mode = s_rx_buf[1];
+    ps2->btn1 = (uint8_t)~s_rx_buf[3];
+    ps2->btn2 = (uint8_t)~s_rx_buf[4];
+    ps2->RJoy_LR = s_rx_buf[5];
+    ps2->RJoy_UD = s_rx_buf[6];
+    ps2->LJoy_LR = s_rx_buf[7];
+    ps2->LJoy_UD = s_rx_buf[8];
+
+    if (!PS2_HandshakeOK(s_rx_buf)) {
+        if (s_reconfig_count < PS2_RETRY_LIMIT) {
+            PS2_ConfigAnalog();
+            ++s_reconfig_count;
+        }
+        return 0u;
+    }
+
+    if (!PS2_ModeValid(ps2->mode)) {
+        if (s_reconfig_count < PS2_RETRY_LIMIT) {
+            PS2_ConfigAnalog();
+            ++s_reconfig_count;
+        }
+        return 1u;
+    }
+
+    if (!PS2_ModeIsAnalog(ps2->mode)) {
+        if (s_reconfig_count < PS2_RETRY_LIMIT) {
+            PS2_ConfigAnalog();
+            ++s_reconfig_count;
+        }
+    } else {
+        s_reconfig_count = 0u;
+    }
+
+    return 1u;
+}
+
+uint8_t PS2_IsCmdDatSwapped(void)
+{
+    return s_swap_cmd_dat;
 }
