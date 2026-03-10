@@ -24,6 +24,22 @@ set(CMAKE_PROJECT_NAME Clion)
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
+# Robot parameter profile selection
+set(ROBOT_PROFILE "dev" CACHE STRING "Robot runtime parameter profile (dev/prod/vehicle_a)")
+set_property(CACHE ROBOT_PROFILE PROPERTY STRINGS dev prod vehicle_a)
+string(TOLOWER "${ROBOT_PROFILE}" ROBOT_PROFILE_LOWER)
+
+if(ROBOT_PROFILE_LOWER STREQUAL "dev")
+    set(ROBOT_PROFILE_DEFINE ROBOT_PROFILE_DEV)
+elseif(ROBOT_PROFILE_LOWER STREQUAL "prod")
+    set(ROBOT_PROFILE_DEFINE ROBOT_PROFILE_PROD)
+elseif(ROBOT_PROFILE_LOWER STREQUAL "vehicle_a")
+    set(ROBOT_PROFILE_DEFINE ROBOT_PROFILE_VEHICLE_A)
+else()
+    message(FATAL_ERROR "Unsupported ROBOT_PROFILE='${ROBOT_PROFILE}'. Use dev/prod/vehicle_a")
+endif()
+
+
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
 message("Build type: " ${CMAKE_BUILD_TYPE})
@@ -54,7 +70,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    ${ROBOT_PROFILE_DEFINE}
+    ROBOT_PROFILE_NAME="${ROBOT_PROFILE_LOWER}"
 )
 
 # Remove wrong libob.a library dependency when using cpp files
