@@ -236,6 +236,10 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     uint16_t vb_mv = 0u;
     uint16_t pct_x10 = 0u;
     int16_t gz_x10 = 0;
+    const robot_health_t *health = RobotControl_GetHealth();
+    link_diag_snapshot_t diag_esp;
+    link_diag_snapshot_t diag_pc;
+    uint16_t last_fault = 0u;
 
     if (batt) {
         float vb = batt->voltage * 1000.0f;
@@ -268,6 +272,14 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     put_u16le(&out[p], (uint16_t)gz_x10); p += 2;
     out[p++] = st->imu_enabled;
     out[p++] = st->imu_valid;
+    put_u16le(&out[p], health->dt_max_us); p += 2;
+    put_u16le(&out[p], health->dt_avg_us); p += 2;
+
+    LinkDiag_GetSnapshot(LINK_ID_ESP, &diag_esp);
+    LinkDiag_GetSnapshot(LINK_ID_PC, &diag_pc);
+    last_fault = (diag_esp.last_err != 0u) ? diag_esp.last_err : diag_pc.last_err;
+    put_u16le(&out[p], last_fault); p += 2;
+    out[p++] = health->degrade_reason;
 
     /* 编码器速度数据 (4轮) */
     for (int i = 0; i < ENC_COUNT; i++) {
@@ -336,6 +348,71 @@ static void append_fault_log_payload(const uint8_t *req_payload,
         put_u16le(&out[p], recs[i].aux1); p += 2;
     }
 
+    *out_len = p;
+}
+
+
+static void append_event_log_payload(const uint8_t *req_payload,
+                                     uint16_t req_len,
+                                     uint8_t *out,
+                                     uint16_t *out_len)
+{
+    uint8_t cursor = 0u;
+    uint8_t max_records = 4u;
+    uint8_t next_cursor = 0u;
+    robot_event_record_t recs[8];
+    uint16_t count;
+    uint16_t p = 0u;
+
+    if (req_len >= 1u) cursor = req_payload[0];
+    if (req_len >= 2u) max_records = req_payload[1];
+    if (max_records == 0u) max_records = 1u;
+    if (max_records > 8u) max_records = 8u;
+
+    count = RobotControl_GetEventLog(cursor, recs, max_records, &next_cursor);
+
+    out[p++] = next_cursor;
+    out[p++] = (uint8_t)count;
+    for (uint16_t i = 0; i < count; ++i) {
+        put_u32le(&out[p], recs[i].ts_ms); p += 4;
+        out[p++] = recs[i].type;
+        out[p++] = recs[i].arg0;
+        put_u16le(&out[p], recs[i].arg1); p += 2;
+    }
+    *out_len = p;
+}
+
+static void append_ctrl_trace_payload(const uint8_t *req_payload,
+                                      uint16_t req_len,
+                                      uint8_t *out,
+                                      uint16_t *out_len)
+{
+    uint8_t cursor = 0u;
+    uint8_t max_records = 1u;
+    uint8_t next_cursor = 0u;
+    robot_trace_frame_t recs[2];
+    uint16_t count;
+    uint16_t p = 0u;
+
+    if (req_len >= 1u) cursor = req_payload[0];
+    if (req_len >= 2u) max_records = req_payload[1];
+    if (max_records == 0u) max_records = 1u;
+    if (max_records > 2u) max_records = 2u;
+
+    count = RobotControl_GetTraceFrames(cursor, recs, max_records, &next_cursor);
+
+    out[p++] = next_cursor;
+    out[p++] = (uint8_t)count;
+    for (uint16_t i = 0; i < count; ++i) {
+        put_u32le(&out[p], recs[i].ts_ms); p += 4;
+        put_u16le(&out[p], (uint16_t)clamp_i16_from_f(recs[i].v_cmd * 32767.0f)); p += 2;
+        put_u16le(&out[p], (uint16_t)clamp_i16_from_f(recs[i].w_cmd * 32767.0f)); p += 2;
+        for (uint8_t k = 0; k < 4; ++k) {
+            put_u16le(&out[p], (uint16_t)clamp_i16_from_f(recs[i].ref_cps[k])); p += 2;
+            put_u16le(&out[p], (uint16_t)clamp_i16_from_f(recs[i].meas_cps[k])); p += 2;
+            put_u16le(&out[p], (uint16_t)clamp_i16_from_f(recs[i].u_out[k] * 32767.0f)); p += 2;
+        }
+    }
     *out_len = p;
 }
 
@@ -438,6 +515,22 @@ static void handle_command(link_id_t link_id,
             break;
         }
         LinkDiag_ClearFaultLog();
+        break;
+
+    case LINK_MSG_CMD_GET_EVENT_LOG:
+        if (payload_len > 2u) {
+            *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
+            break;
+        }
+        append_event_log_payload(payload, payload_len, resp_payload, resp_len);
+        break;
+
+    case LINK_MSG_CMD_GET_CTRL_TRACE:
+        if (payload_len > 2u) {
+            *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
+            break;
+        }
+        append_ctrl_trace_payload(payload, payload_len, resp_payload, resp_len);
         break;
 
     default:
