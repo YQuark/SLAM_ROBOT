@@ -42,6 +42,7 @@
 
 #include "robot_config.h"
 #include "robot_control.h"
+#include "safety_manager.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,6 +68,7 @@ PS2_TypeDef ps2;
 static uint8_t s_uv_limit_active = 0;
 static uint8_t s_uv_cutoff_active = 0;
 static float s_nominal_duty_limit = 0.80f;
+static SafetyInputs_t s_safety_inputs;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -130,9 +132,6 @@ static void Safety_BatteryProtect(void)
   }
 
   if (s_uv_cutoff_active) {
-    if (RobotControl_GetMode() != MODE_IDLE) {
-      RobotControl_SetMode(MODE_IDLE);
-    }
     motor_set_duty_limit(BATT_LIMIT_DUTY);
   } else if (s_uv_limit_active) {
     motor_set_duty_limit(BATT_LIMIT_DUTY);
@@ -691,6 +690,7 @@ int main(void)
   }
 
   RobotControl_Init();
+  SafetyManager_Init();
   s_nominal_duty_limit = motor_get_duty_limit();
   RobotControl_SetMode(MODE_OPEN_LOOP);  // Start in open-loop for drivetrain verification.
   RobotControl_SetIMUEnabled(imu_ready ? 1 : 0);
@@ -720,6 +720,7 @@ int main(void)
   uint32_t last_heartbeat = last_ctrl;
   uint32_t last_telemetry = last_ctrl;
   uint32_t last_ctrl_dbg = last_ctrl;
+  uint8_t ctrl_period_abnormal = 0u;
 #if !PS2_ENABLE
   (void)last_ps2;
   (void)ps2;
@@ -765,6 +766,8 @@ int main(void)
       } else {
         RobotControl_UpdateIMU(NULL, 0, now);
       }
+      const RobotControlState_t *imu_state = RobotControl_GetState();
+      s_safety_inputs.imu_cont_fail = imu_ready && (imu_state->imu_err_cnt >= 5u);
     }
 
     /* ---------------- 鐢垫睜鐢靛帇鏇存柊 ---------------- */
@@ -772,6 +775,8 @@ int main(void)
       last_batt = now;
       Battery_Update(&batt);
       Safety_BatteryProtect();
+      s_safety_inputs.battery_uv_limit = s_uv_limit_active;
+      s_safety_inputs.battery_uv_cutoff = s_uv_cutoff_active;
     }
 
     if (now - last_oled >= OLED_INTERVAL_MS) {
@@ -781,13 +786,27 @@ int main(void)
 
     /* ---------------- 缂栫爜锟?+ 鎺у埗闂幆 ---------------- */
     if (now - last_ctrl >= CTRL_PERIOD_MS) {
-      float dt = (float)(now - last_ctrl) / 1000.0f;
+      uint32_t ctrl_elapsed = now - last_ctrl;
+      float dt = (float)ctrl_elapsed / 1000.0f;
       last_ctrl = now;
-      if (s_uv_cutoff_active && RobotControl_GetMode() != MODE_IDLE) {
+      ctrl_period_abnormal = (ctrl_elapsed > (CTRL_PERIOD_MS * 2u));
+      s_safety_inputs.ctrl_period_abnormal = ctrl_period_abnormal;
+
+      const RobotControlState_t *ctrl_state = RobotControl_GetState();
+      s_safety_inputs.link_timeout = (RobotControl_GetMode() != MODE_IDLE) && (ctrl_state->src == CMD_SRC_NONE);
+      s_safety_inputs.extra_code = (uint16_t)ctrl_elapsed;
+
+      SafetyManager_Update(&s_safety_inputs, now);
+      if (!SafetyManager_AllowActuation() && RobotControl_GetMode() != MODE_IDLE) {
         RobotControl_SetMode(MODE_IDLE);
       }
+
       Encoder_UpdateAll(dt);
-      RobotControl_Update(dt, now);
+      if (SafetyManager_AllowActuation()) {
+        RobotControl_Update(dt, now);
+      } else {
+        motor_coast_all();
+      }
 
       /* 璋冭瘯杈撳嚭锛氭樉绀哄綋鍓嶆帶鍒剁姸鎬侊紙鎵€锟?涓疆瀛愶級 */
       if (CTRL_DEBUG_ENABLE && (now - last_ctrl_dbg >= CTRL_DEBUG_INTERVAL_MS)) {
@@ -833,6 +852,20 @@ int main(void)
                    ps2.RJoy_LR, ps2.RJoy_UD,
                    batt.voltage);
       HAL_UART_Transmit(&huart1, (uint8_t*)buf, n, 100);
+    }
+
+
+    SafetyEvent_t evt;
+    while (SafetyManager_PopEvent(&evt)) {
+      char s_buf[140];
+      int s_n = snprintf(s_buf, sizeof(s_buf),
+                         "[SAFE_EVT] t=%lu src=0x%02lX %s->%s code=%u\r\n",
+                         (unsigned long)evt.timestamp_ms,
+                         (unsigned long)evt.source_mask,
+                         SafetyManager_StateName(evt.old_state),
+                         SafetyManager_StateName(evt.new_state),
+                         evt.extra_code);
+      HAL_UART_Transmit(&huart1, (uint8_t *)s_buf, s_n, 100);
     }
 
     Safety_WatchdogFeed();

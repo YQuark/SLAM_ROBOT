@@ -1,5 +1,6 @@
 #include "motor.h"
 #include "robot_control.h"
+#include "safety_manager.h"
 #include <math.h>
 
 typedef struct {
@@ -45,6 +46,10 @@ void motor_set(motor_id_t id, float speed)
         return;
     }
     _motor_def_t *m = &_M[id];
+
+    if (!SafetyManager_AllowActuation()) {
+        speed = 0.0f;
+    }
 
     if (speed > 1.0f) {
         speed = 1.0f;
