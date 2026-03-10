@@ -78,6 +78,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 static void USART_SendString(const char *s);
+static void Config_PrintProfileSummary(void);
 
 static void Safety_WatchdogInit(void)
 {
@@ -163,6 +164,27 @@ static void MPU6050_PrintStatus(void)
 static void USART_SendString(const char *s)
 {
   HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 100);
+}
+
+static void Config_PrintProfileSummary(void)
+{
+  char buf[192];
+  int n = snprintf(buf, sizeof(buf),
+                   "[CFG] profile=%s version=%s proto=0x%02X\r\n",
+                   ROBOT_PROFILE_NAME, ROBOT_CONFIG_VERSION, LINK_PROTO_VER);
+  HAL_UART_Transmit(&huart1, (uint8_t*)buf, n, 100);
+
+  n = snprintf(buf, sizeof(buf),
+               "[CFG] batt_limit=%.2f/%.2fV cutoff=%.2f/%.2fV duty=%.2f cmd_to=%ums\r\n",
+               BATT_LIMIT_VOLTAGE, BATT_LIMIT_RECOVER_V,
+               BATT_CUTOFF_VOLTAGE, BATT_CUTOFF_RECOVER_V,
+               BATT_LIMIT_DUTY, CMD_TIMEOUT_MS);
+  HAL_UART_Transmit(&huart1, (uint8_t*)buf, n, 100);
+
+  n = snprintf(buf, sizeof(buf),
+               "[CFG] iwdg=%u timeout=%ums ctrl_period=%ums max_cps=%.1f\r\n",
+               IWDG_ENABLE, IWDG_TIMEOUT_MS, CTRL_PERIOD_MS, MAX_CPS);
+  HAL_UART_Transmit(&huart1, (uint8_t*)buf, n, 100);
 }
 
 static void I2C1_Scan(void)
@@ -639,6 +661,7 @@ int main(void)
 
   /* 鍚姩鎻愮ず */
   USART_SendString("\r\n===UART Monitor Start ===\r\n");
+  Config_PrintProfileSummary();
   {
     uint32_t csr = RCC->CSR;
     char rst[96];
