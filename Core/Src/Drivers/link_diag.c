@@ -1,5 +1,6 @@
 #include "link_diag.h"
 #include "robot_config.h"
+#include "robot_control.h"
 #include "stm32f4xx_hal.h"
 #include <string.h>
 
@@ -41,6 +42,7 @@ void LinkDiag_Count(link_id_t link_id, uint16_t err_code)
 {
     if (!valid_link(link_id)) return;
     s_diag[link_id].snap.last_err = err_code;
+    RobotControl_RecordFaultEvent(err_code);
 }
 
 void LinkDiag_IncRxTotal(link_id_t link_id) { if (valid_link(link_id)) s_diag[link_id].snap.rx_total++; }
@@ -86,6 +88,7 @@ void LinkDiag_PushFault(link_id_t link_id,
     s_fault_head = (uint16_t)((s_fault_head + 1u) % FAULT_LOG_CAPACITY);
 
     s_diag[link_id].snap.last_err = err_code;
+    RobotControl_RecordFaultEvent(err_code);
 }
 
 void LinkDiag_GetSnapshot(link_id_t link_id, link_diag_snapshot_t *out)

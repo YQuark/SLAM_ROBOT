@@ -50,6 +50,44 @@ extern "C" {
         MODE_CLOSED_LOOP  // 闭环 (正常 PID)
     } ControlMode_t;
 
+    typedef enum {
+        DEGRADE_NONE = 0,
+        DEGRADE_CMD_TIMEOUT = 1,
+        DEGRADE_IMU_LOST = 2,
+        DEGRADE_BATTERY_CUTOFF = 3,
+        DEGRADE_ABNORMAL_SPEED = 4,
+        DEGRADE_OUTPUT_SATURATION = 5,
+    } degrade_reason_t;
+
+    typedef enum {
+        ROBOT_EVT_MODE_TRANSITION = 0,
+        ROBOT_EVT_FAULT_TRIGGER = 1,
+        ROBOT_EVT_CMD_SRC_SWITCH = 2,
+        ROBOT_EVT_LIMIT_TRIGGER = 3,
+    } robot_event_type_t;
+
+    typedef struct {
+        uint32_t ts_ms;
+        uint8_t type;
+        uint8_t arg0;
+        uint16_t arg1;
+    } robot_event_record_t;
+
+    typedef struct {
+        uint16_t dt_max_us;
+        uint16_t dt_avg_us;
+        uint8_t degrade_reason;
+    } robot_health_t;
+
+    typedef struct {
+        uint32_t ts_ms;
+        float v_cmd;
+        float w_cmd;
+        float ref_cps[4];
+        float meas_cps[4];
+        float u_out[4];
+    } robot_trace_frame_t;
+
 
     // 新增接口
     void RobotControl_SetMode(ControlMode_t mode);
@@ -80,6 +118,18 @@ extern "C" {
 
     /* 读取当前状态 */
     const RobotControlState_t* RobotControl_GetState(void);
+
+    const robot_health_t* RobotControl_GetHealth(void);
+    void RobotControl_SetExternalDegrade(degrade_reason_t reason);
+    void RobotControl_RecordFaultEvent(uint16_t fault_code);
+    uint16_t RobotControl_GetEventLog(uint8_t cursor,
+                                      robot_event_record_t *out,
+                                      uint8_t max_records,
+                                      uint8_t *next_cursor);
+    uint16_t RobotControl_GetTraceFrames(uint8_t cursor,
+                                         robot_trace_frame_t *out,
+                                         uint8_t max_records,
+                                         uint8_t *next_cursor);
 
 #ifdef __cplusplus
 }

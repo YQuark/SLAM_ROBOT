@@ -67,6 +67,8 @@ PS2_TypeDef ps2;
 static uint8_t s_uv_limit_active = 0;
 static uint8_t s_uv_cutoff_active = 0;
 static float s_nominal_duty_limit = 0.80f;
+static uint8_t s_log_level = LOG_LEVEL_INFO;
+static uint32_t s_log_last_ms[3] = {0u, 0u, 0u};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -78,6 +80,25 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 static void USART_SendString(const char *s);
+static void Log_Print(uint8_t level, const char *s);
+
+
+static void Log_Print(uint8_t level, const char *s)
+{
+  uint32_t now = HAL_GetTick();
+  uint32_t min_interval = LOG_MIN_INTERVAL_INFO_MS;
+  if (level > s_log_level || level > LOG_LEVEL_INFO) {
+    return;
+  }
+  if (level == LOG_LEVEL_ERROR) min_interval = LOG_MIN_INTERVAL_ERROR_MS;
+  else if (level == LOG_LEVEL_WARN) min_interval = LOG_MIN_INTERVAL_WARN_MS;
+
+  if ((now - s_log_last_ms[level]) < min_interval) {
+    return;
+  }
+  s_log_last_ms[level] = now;
+  USART_SendString(s);
+}
 
 static void Safety_WatchdogInit(void)
 {
@@ -92,7 +113,7 @@ static void Safety_WatchdogInit(void)
   IWDG->RLR = reload - 1u;     // Reload value
   while (IWDG->SR != 0u) {
     if ((HAL_GetTick() - t0) > 50u) {
-      USART_SendString("[SAFE] IWDG SR wait timeout, continue.\r\n");
+      Log_Print(LOG_LEVEL_WARN, "[WARN] IWDG SR wait timeout, continue.\r\n");
       break;
     }
   }
@@ -115,18 +136,20 @@ static void Safety_BatteryProtect(void)
 
   if (!s_uv_cutoff_active && v <= BATT_CUTOFF_VOLTAGE) {
     s_uv_cutoff_active = 1;
-    USART_SendString("[SAFE] Battery cutoff active\r\n");
+    Log_Print(LOG_LEVEL_ERROR, "[ERROR] Battery cutoff active\r\n");
+    RobotControl_SetExternalDegrade(DEGRADE_BATTERY_CUTOFF);
   } else if (s_uv_cutoff_active && v >= BATT_CUTOFF_RECOVER_V) {
     s_uv_cutoff_active = 0;
-    USART_SendString("[SAFE] Battery cutoff released\r\n");
+    Log_Print(LOG_LEVEL_INFO, "[INFO] Battery cutoff released\r\n");
+    RobotControl_SetExternalDegrade(DEGRADE_NONE);
   }
 
   if (!s_uv_limit_active && v <= BATT_LIMIT_VOLTAGE) {
     s_uv_limit_active = 1;
-    USART_SendString("[SAFE] Battery limit active\r\n");
+    Log_Print(LOG_LEVEL_WARN, "[WARN] Battery limit active\r\n");
   } else if (s_uv_limit_active && v >= BATT_LIMIT_RECOVER_V) {
     s_uv_limit_active = 0;
-    USART_SendString("[SAFE] Battery limit released\r\n");
+    Log_Print(LOG_LEVEL_INFO, "[INFO] Battery limit released\r\n");
   }
 
   if (s_uv_cutoff_active) {
@@ -745,7 +768,7 @@ int main(void)
         /* PS2鎵弿澶辫触锛屽彧鍦ㄩ娆″け璐ユ椂璀﹀憡 */
         static uint8_t ps2_warned = 0;
         if (!ps2_warned) {
-          USART_SendString("PS2: Invalid mode (0x");
+          Log_Print(LOG_LEVEL_WARN, "[WARN] PS2: Invalid mode (0x");
           char hex[3];
           snprintf(hex, sizeof(hex), "%02X", ps2.mode);
           USART_SendString(hex);

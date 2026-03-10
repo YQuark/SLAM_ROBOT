@@ -108,3 +108,57 @@ cmake --build --preset Debug
   - 定时器模式（PWM/编码器）
   - 串口与 I2C 初始化顺序
 
+
+
+## 9. 诊断与售后排障（新增）
+
+### 9.1 轻量事件环形缓冲
+
+固件新增了 `EVENT_LOG_CAPACITY`（默认 128）事件缓冲，记录以下关键事件：
+
+- 状态迁移（`ROBOT_EVT_MODE_TRANSITION`）
+- 故障触发（`ROBOT_EVT_FAULT_TRIGGER`）
+- 命令源切换（`ROBOT_EVT_CMD_SRC_SWITCH`）
+- 限幅触发（`ROBOT_EVT_LIMIT_TRIGGER`）
+
+可通过链路协议命令 `LINK_MSG_CMD_GET_EVENT_LOG (0x34)` 拉取。
+
+### 9.2 心跳/状态包健康字段
+
+`GET_STATUS` 状态包新增健康字段：
+
+- 控制循环抖动统计：`dt_max_us` / `dt_avg_us`
+- 最近故障码：`last_fault`
+- 当前降级原因：`degrade_reason`
+
+用于快速判断“控制周期是否异常、故障是否刚出现、当前是否在降级运行”。
+
+### 9.3 控制关键变量短窗口轨迹抓取
+
+新增轨迹环形缓冲 `TRACE_LOG_CAPACITY`（默认 128 帧），每帧包含：
+
+- `v_cmd / w_cmd`
+- `ref_cps[4] / meas_cps[4] / u_out[4]`
+
+可通过命令 `LINK_MSG_CMD_GET_CTRL_TRACE (0x35)` 分页抓取最近 N 帧。
+
+### 9.4 串口日志等级与上报频率约定
+
+为避免串口打爆，建议统一为：
+
+- `ERROR`：关键故障（欠压切断、链路不可恢复异常）
+- `WARN`：可恢复异常（限幅频繁、链路抖动、传感器暂失）
+- `INFO`：状态变更（恢复、模式切换、一次性启动信息）
+
+并使用最小上报间隔限流（见 `robot_config.h`）：
+
+- `ERROR >= 100ms`
+- `WARN >= 200ms`
+- `INFO >= 1000ms`
+
+### 9.5 售后排障流程（建议按顺序）
+
+1. **先看状态机**：模式是否在 `IDLE/OPEN_LOOP/CLOSED_LOOP` 之间异常跳转，是否持续降级。
+2. **再看链路**：检查 `GET_DIAG` / 故障日志 / 事件日志中 CRC、COBS、RX 溢出、重复包等计数。
+3. **再看电源**：确认电池电压是否触发 `limit/cutoff`，以及是否反复抖动在阈值附近。
+4. **最后看参数**：核对 PI、斜坡、限幅、启动助推阈值是否与车体/负载匹配。

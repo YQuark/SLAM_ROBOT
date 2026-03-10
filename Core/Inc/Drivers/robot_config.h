@@ -126,4 +126,15 @@
 #define LINK_RX_ACCUM_MAX        260u
 #define ACK_TIMEOUT_MS            80u
 #define ACK_RETRY_MAX              2u
+
 #define FAULT_LOG_CAPACITY        64u
+#define EVENT_LOG_CAPACITY       128u
+#define TRACE_LOG_CAPACITY       128u
+
+/* ======== 串口日志等级与限流 ======== */
+#define LOG_LEVEL_ERROR            0u
+#define LOG_LEVEL_WARN             1u
+#define LOG_LEVEL_INFO             2u
+#define LOG_MIN_INTERVAL_ERROR_MS 100u
+#define LOG_MIN_INTERVAL_WARN_MS  200u
+#define LOG_MIN_INTERVAL_INFO_MS 1000u

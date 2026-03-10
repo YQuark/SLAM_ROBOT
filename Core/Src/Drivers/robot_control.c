@@ -51,6 +51,17 @@ static float s_outer_i_w = 0.0f;
 static float s_last_u[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 static uint16_t s_start_assist_ticks[4] = {0u, 0u, 0u, 0u};
 
+static robot_health_t s_health;
+static degrade_reason_t s_external_degrade = DEGRADE_NONE;
+
+static robot_event_record_t s_event_log[EVENT_LOG_CAPACITY];
+static uint16_t s_event_head = 0u;
+static uint16_t s_event_count = 0u;
+
+static robot_trace_frame_t s_trace_log[TRACE_LOG_CAPACITY];
+static uint16_t s_trace_head = 0u;
+static uint16_t s_trace_count = 0u;
+
 /* ---------------- 辅助函数 ---------------- */
 static inline float clampf(float x, float lo, float hi)
 {
@@ -120,6 +131,69 @@ static void reset_runtime_states(void)
     }
 }
 
+static void push_event(robot_event_type_t type, uint8_t arg0, uint16_t arg1, uint32_t now_ms)
+{
+    robot_event_record_t rec;
+    rec.ts_ms = now_ms;
+    rec.type = (uint8_t)type;
+    rec.arg0 = arg0;
+    rec.arg1 = arg1;
+
+    s_event_log[s_event_head] = rec;
+    s_event_head = (uint16_t)((s_event_head + 1u) % EVENT_LOG_CAPACITY);
+    if (s_event_count < EVENT_LOG_CAPACITY) {
+        s_event_count++;
+    }
+}
+
+static void push_trace(uint32_t now_ms)
+{
+    robot_trace_frame_t *f = &s_trace_log[s_trace_head];
+    f->ts_ms = now_ms;
+    f->v_cmd = s_st.v_cmd;
+    f->w_cmd = s_st.w_cmd;
+    for (int i = 0; i < 4; ++i) {
+        f->ref_cps[i] = s_st.ref_cps[i];
+        f->meas_cps[i] = s_st.meas_cps[i];
+        f->u_out[i] = s_st.u_out[i];
+    }
+
+    s_trace_head = (uint16_t)((s_trace_head + 1u) % TRACE_LOG_CAPACITY);
+    if (s_trace_count < TRACE_LOG_CAPACITY) {
+        s_trace_count++;
+    }
+}
+
+static void update_health_dt(float dt)
+{
+    float dt_us_f = dt * 1000000.0f;
+    uint16_t dt_us;
+    uint32_t avg;
+    if (dt_us_f < 0.0f) dt_us_f = 0.0f;
+    if (dt_us_f > 65535.0f) dt_us_f = 65535.0f;
+    dt_us = (uint16_t)(dt_us_f + 0.5f);
+
+    if (dt_us > s_health.dt_max_us) {
+        s_health.dt_max_us = dt_us;
+    }
+
+    avg = (uint32_t)s_health.dt_avg_us * 7u + (uint32_t)dt_us;
+    s_health.dt_avg_us = (uint16_t)(avg / 8u);
+}
+
+static void update_degrade_reason(cmd_source_t src)
+{
+    if (s_external_degrade != DEGRADE_NONE) {
+        s_health.degrade_reason = (uint8_t)s_external_degrade;
+    } else if ((src == CMD_SRC_NONE) && (s_mode != MODE_IDLE)) {
+        s_health.degrade_reason = DEGRADE_CMD_TIMEOUT;
+    } else if (s_st.imu_enabled && !s_st.imu_valid) {
+        s_health.degrade_reason = DEGRADE_IMU_LOST;
+    } else {
+        s_health.degrade_reason = DEGRADE_NONE;
+    }
+}
+
 /* ---------------- 核心接口 ---------------- */
 void RobotControl_Init(void)
 {
@@ -136,6 +210,14 @@ void RobotControl_Init(void)
     s_pc_ts = 0;
     s_open_ts = 0;
     s_st.imu_enabled = USE_IMU_DEFAULT;
+    memset(&s_health, 0, sizeof(s_health));
+    s_external_degrade = DEGRADE_NONE;
+    memset(s_event_log, 0, sizeof(s_event_log));
+    s_event_head = 0u;
+    s_event_count = 0u;
+    memset(s_trace_log, 0, sizeof(s_trace_log));
+    s_trace_head = 0u;
+    s_trace_count = 0u;
 }
 
 void RobotControl_SetMode(ControlMode_t mode)
@@ -145,6 +227,7 @@ void RobotControl_SetMode(ControlMode_t mode)
     }
     s_mode = mode;
     s_mode_switch_ts = HAL_GetTick();
+    push_event(ROBOT_EVT_MODE_TRANSITION, (uint8_t)mode, 0u, s_mode_switch_ts);
     reset_pi();
     reset_runtime_states();
     motor_coast_all();
@@ -206,6 +289,8 @@ void RobotControl_UpdateIMU(const MPU6050_Data_t *imu, uint8_t ok, uint32_t now_
         if (++s_st.imu_err_cnt >= 5) {
             s_st.imu_enabled = 0;
             s_st.imu_valid = 0;
+            s_health.degrade_reason = DEGRADE_IMU_LOST;
+            push_event(ROBOT_EVT_FAULT_TRIGGER, 0u, DEGRADE_IMU_LOST, HAL_GetTick());
         }
     }
 }
@@ -301,6 +386,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     if (src != s_prev_src) {
         s_prev_src = src;
         s_src_switch_ts = now_ms;
+        push_event(ROBOT_EVT_CMD_SRC_SWITCH, (uint8_t)src, 0u, now_ms);
     }
     s_st.src_transition_active = 0u;
 
@@ -308,12 +394,15 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     s_st.w_cmd = w_cmd;
     s_st.src = src;
 
+    update_health_dt(dt);
+    update_degrade_reason(src);
     update_observer(dt);
 
     s_st.mode_transition_active = 0u;
 
     if (s_mode == MODE_IDLE) {
         stop_outputs_and_observe();
+        push_trace(now_ms);
         return;
     }
 
@@ -338,8 +427,13 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     s_st.w_ref_filt = s_w_ref_filt;
 
     if (s_mode == MODE_OPEN_LOOP) {
-        float vL = clampf(s_v_ref_filt - s_w_ref_filt, -1.0f, 1.0f);
-        float vR = clampf(s_v_ref_filt + s_w_ref_filt, -1.0f, 1.0f);
+        float mix_l = s_v_ref_filt - s_w_ref_filt;
+        float mix_r = s_v_ref_filt + s_w_ref_filt;
+        float vL = clampf(mix_l, -1.0f, 1.0f);
+        float vR = clampf(mix_r, -1.0f, 1.0f);
+        if ((fabsf(mix_l) > 1.0f) || (fabsf(mix_r) > 1.0f)) {
+            push_event(ROBOT_EVT_LIMIT_TRIGGER, 1u, 0u, now_ms);
+        }
         motor_set(MOTOR_L1, vL);
         motor_set(MOTOR_L2, vL);
         motor_set(MOTOR_R1, vR);
@@ -356,6 +450,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         s_st.u_out[ENC_L2] = vL;
         s_st.u_out[ENC_R1] = vR;
         s_st.u_out[ENC_R2] = vR;
+        push_trace(now_ms);
         return;
     }
 
@@ -395,6 +490,8 @@ void RobotControl_Update(float dt, uint32_t now_ms)
             u = 0.0f;
             s_last_u[i] = 0.0f;
             s_start_assist_ticks[i] = 0u;
+            s_health.degrade_reason = DEGRADE_ABNORMAL_SPEED;
+            push_event(ROBOT_EVT_FAULT_TRIGGER, (uint8_t)i, DEGRADE_ABNORMAL_SPEED, now_ms);
         } else {
             if (CTRL_USE_STATIC_FF && fabsf(ref) > 1.0f) {
                 ff = U_STATIC_FF * signf_nonzero(ref);
@@ -402,6 +499,10 @@ void RobotControl_Update(float dt, uint32_t now_ms)
             u = PI_Update_AW(&s_pi[i], ref - meas, ff, dt);
             u = slew_limit(s_last_u[i], u, U_SLEW_MAX, dt);
             s_last_u[i] = u;
+            if (fabsf(u) >= 0.98f) {
+                push_event(ROBOT_EVT_LIMIT_TRIGGER, (uint8_t)i, (uint16_t)(fabsf(ref) + 0.5f), now_ms);
+                s_health.degrade_reason = DEGRADE_OUTPUT_SATURATION;
+            }
 
 #if START_ASSIST_ENABLE
             if (fabsf(ref) > (START_ASSIST_REF_RATIO * MAX_CPS) &&
@@ -430,10 +531,70 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     for (int i = 0; i < 4; ++i) {
         s_st.u_out[i] = u_cmd[i];
     }
+    push_trace(now_ms);
 }
 
 const RobotControlState_t *RobotControl_GetState(void)
 {
     return &s_st;
+}
+
+const robot_health_t *RobotControl_GetHealth(void)
+{
+    return &s_health;
+}
+
+void RobotControl_SetExternalDegrade(degrade_reason_t reason)
+{
+    s_external_degrade = reason;
+    if (reason != DEGRADE_NONE) {
+        s_health.degrade_reason = (uint8_t)reason;
+    }
+}
+
+void RobotControl_RecordFaultEvent(uint16_t fault_code)
+{
+    push_event(ROBOT_EVT_FAULT_TRIGGER, 0u, fault_code, HAL_GetTick());
+}
+
+static uint16_t copy_ring_event(uint8_t cursor, robot_event_record_t *out, uint8_t max_records, uint8_t *next_cursor)
+{
+    uint16_t copied = 0u;
+    uint16_t oldest = (uint16_t)((s_event_head + EVENT_LOG_CAPACITY - s_event_count) % EVENT_LOG_CAPACITY);
+    if (next_cursor) *next_cursor = cursor;
+    if (!out || max_records == 0u || s_event_count == 0u) return 0u;
+    if (cursor >= s_event_count) cursor = 0u;
+    for (uint16_t i = cursor; i < s_event_count && copied < max_records; ++i) {
+        uint16_t idx = (uint16_t)((oldest + i) % EVENT_LOG_CAPACITY);
+        out[copied++] = s_event_log[idx];
+    }
+    if (next_cursor) {
+        uint16_t n = (uint16_t)(cursor + copied);
+        *next_cursor = (n >= s_event_count) ? 0u : (uint8_t)n;
+    }
+    return copied;
+}
+
+uint16_t RobotControl_GetEventLog(uint8_t cursor, robot_event_record_t *out, uint8_t max_records, uint8_t *next_cursor)
+{
+    return copy_ring_event(cursor, out, max_records, next_cursor);
+}
+
+uint16_t RobotControl_GetTraceFrames(uint8_t cursor, robot_trace_frame_t *out, uint8_t max_records, uint8_t *next_cursor)
+{
+    uint16_t copied = 0u;
+    uint16_t oldest = (uint16_t)((s_trace_head + TRACE_LOG_CAPACITY - s_trace_count) % TRACE_LOG_CAPACITY);
+    if (next_cursor) *next_cursor = cursor;
+    if (!out || max_records == 0u || s_trace_count == 0u) return 0u;
+    if (cursor >= s_trace_count) cursor = 0u;
+    for (uint16_t i = cursor; i < s_trace_count && copied < max_records; ++i) {
+        uint16_t idx = (uint16_t)((oldest + i) % TRACE_LOG_CAPACITY);
+        out[copied++] = s_trace_log[idx];
+    }
+    if (next_cursor) {
+        uint16_t n = (uint16_t)(cursor + copied);
+        *next_cursor = (n >= s_trace_count) ? 0u : (uint8_t)n;
+    }
+    return copied;
 }
 
