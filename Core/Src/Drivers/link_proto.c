@@ -24,6 +24,17 @@
 #define LINK_RESP_MAX 220u
 #define LINK_COBS_MAX 300u
 
+#define LINK_AUTH_WINDOW_MS 1000u
+
+typedef enum {
+    LINK_DENY_NONE = 0u,
+    LINK_DENY_AUTH_FAIL = 1u,
+    LINK_DENY_REPLAY = 2u,
+    LINK_DENY_STALE = 3u,
+    LINK_DENY_WINDOW_EXPIRED = 4u,
+} link_deny_reason_t;
+
+
 typedef struct {
     UART_HandleTypeDef *huart;
 
@@ -43,6 +54,15 @@ typedef struct {
     uint8_t last_resp_type;
     uint16_t last_resp_len;
     uint8_t last_resp_data[LINK_COBS_MAX];
+
+    uint32_t session_id;
+    uint32_t command_counter;
+    uint8_t session_valid;
+    uint32_t auth_window_expire_ms;
+
+    uint16_t last_reject_code;
+    uint8_t last_reject_reason;
+    uint32_t last_reject_ts_ms;
 } link_ctx_t;
 
 static link_ctx_t s_ctx[LINK_ID_MAX];
@@ -297,6 +317,9 @@ static void append_diag_payload(link_id_t link_id, uint8_t *out, uint16_t *out_l
     put_u32le(&out[p], s.uart_err); p += 4;
     put_u32le(&out[p], s.tx_fail); p += 4;
     put_u16le(&out[p], s.last_err); p += 2;
+    put_u16le(&out[p], s_ctx[link_id].last_reject_code); p += 2;
+    out[p++] = s_ctx[link_id].last_reject_reason;
+    put_u32le(&out[p], s_ctx[link_id].last_reject_ts_ms); p += 4;
 
     *out_len = p;
 }
@@ -339,7 +362,75 @@ static void append_fault_log_payload(const uint8_t *req_payload,
     *out_len = p;
 }
 
+static uint8_t link_is_motion_cmd(uint8_t msg_type)
+{
+    return (msg_type == LINK_MSG_CMD_SET_DRIVE || msg_type == LINK_MSG_CMD_SET_MODE) ? 1u : 0u;
+}
+
+static void link_record_reject(link_ctx_t *ctx, uint16_t err_code, link_deny_reason_t reason, uint32_t now_ms)
+{
+    if (!ctx) return;
+    ctx->last_reject_code = err_code;
+    ctx->last_reject_reason = (uint8_t)reason;
+    ctx->last_reject_ts_ms = now_ms;
+}
+
+static uint8_t link_validate_security(link_ctx_t *ctx,
+                                      uint8_t msg_type,
+                                      const uint8_t **payload,
+                                      uint16_t *payload_len,
+                                      uint16_t *err_code,
+                                      uint32_t now_ms)
+{
+    uint32_t session_id;
+    uint32_t command_counter;
+
+    if (!ctx || !payload || !*payload || !payload_len || !err_code) return 0u;
+
+    if (*payload_len < 8u) {
+        *err_code = LINK_ERR_AUTH_FAIL;
+        link_record_reject(ctx, *err_code, LINK_DENY_AUTH_FAIL, now_ms);
+        return 0u;
+    }
+
+    session_id = (uint32_t)get_u16le(&(*payload)[0]) | ((uint32_t)get_u16le(&(*payload)[2]) << 16);
+    command_counter = (uint32_t)get_u16le(&(*payload)[4]) | ((uint32_t)get_u16le(&(*payload)[6]) << 16);
+
+    if (!ctx->session_valid || session_id != ctx->session_id) {
+        ctx->session_id = session_id;
+        ctx->command_counter = command_counter;
+        ctx->session_valid = 1u;
+        ctx->auth_window_expire_ms = now_ms + LINK_AUTH_WINDOW_MS;
+    } else {
+        if (command_counter == ctx->command_counter) {
+            *err_code = LINK_ERR_REPLAY_DETECTED;
+            link_record_reject(ctx, *err_code, LINK_DENY_REPLAY, now_ms);
+            return 0u;
+        }
+        if (command_counter < ctx->command_counter) {
+            *err_code = LINK_ERR_STALE_COMMAND;
+            link_record_reject(ctx, *err_code, LINK_DENY_STALE, now_ms);
+            return 0u;
+        }
+
+        if (link_is_motion_cmd(msg_type) && (int32_t)(ctx->auth_window_expire_ms - now_ms) <= 0) {
+            *err_code = LINK_ERR_AUTH_FAIL;
+            link_record_reject(ctx, *err_code, LINK_DENY_WINDOW_EXPIRED, now_ms);
+            return 0u;
+        }
+
+        ctx->command_counter = command_counter;
+        ctx->auth_window_expire_ms = now_ms + LINK_AUTH_WINDOW_MS;
+    }
+
+    *payload = &(*payload)[8];
+    *payload_len = (uint16_t)(*payload_len - 8u);
+
+    return 1u;
+}
+
 static void handle_command(link_id_t link_id,
+                           link_ctx_t *ctx,
                            uint8_t seq,
                            uint8_t msg_type,
                            const uint8_t *payload,
@@ -446,6 +537,9 @@ static void handle_command(link_id_t link_id,
     }
 
     if (*err_code != LINK_ERR_OK) {
+        if (*err_code == LINK_ERR_AUTH_FAIL) {
+            link_record_reject(ctx, *err_code, LINK_DENY_AUTH_FAIL, now_ms);
+        }
         LinkDiag_Count(link_id, *err_code);
         LinkDiag_PushFault(link_id, FAULT_SEV_ERROR, *err_code, seq, msg_type, payload_len, 0u);
     }
@@ -659,7 +753,14 @@ void LinkProto_Poll(link_id_t link_id,
     ctx->last_req_type = msg_type;
 
     if (err_code == LINK_ERR_OK) {
-        handle_command(link_id, seq, msg_type, payload, payload_len,
+        if (!link_validate_security(ctx, msg_type, &payload, &payload_len, &err_code, HAL_GetTick())) {
+            LinkDiag_Count(link_id, err_code);
+            LinkDiag_PushFault(link_id, FAULT_SEV_WARN, err_code, seq, msg_type, payload_len, 0u);
+        }
+    }
+
+    if (err_code == LINK_ERR_OK) {
+        handle_command(link_id, ctx, seq, msg_type, payload, payload_len,
                        &err_code, &detail, resp_payload, &resp_len);
     }
 
