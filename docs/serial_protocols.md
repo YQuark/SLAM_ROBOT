@@ -159,17 +159,17 @@ Limits:
   8. `gz_dps_x10` `i16`
   9. `imu_enabled` `u8`
   10. `imu_valid` `u8`
-  11. `enc_vel_cps[4]` `i16 x 4`
-  12. `v_est_q15` `i16`
-  13. `w_est_q15` `i16`
-  14. `enc_fault_mask` `u8`
+  11. `v_est_q15` `i16`
+  12. `w_est_q15` `i16`
+  13. `enc_fault_mask` `u8`
+  14. `enc_vel_cps[4]` `i16 x 4`
 
 Notes:
 
 - `v_cmd_q15` and `w_cmd_q15` are normalized command values scaled by `32767`.
-- `enc_vel_cps` order follows `ENC_L1`, `ENC_L2`, `ENC_R1`, `ENC_R2`.
 - `v_est_q15` and `w_est_q15` are firmware-side estimated chassis linear/angular velocity, also scaled by `32767`.
 - `enc_fault_mask` exposes encoder fault state bits for host-side diagnostics.
+- `enc_vel_cps` order follows `ENC_L1`, `ENC_L2`, `ENC_R1`, `ENC_R2`.
 
 ### `SET_DRIVE` `0x10`
 
@@ -312,7 +312,7 @@ OK PONG
 Response:
 
 ```text
-OK CMDS: PING, HELP, STATUS, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>
+OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, MOTOR <l> <r>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>
 ```
 
 #### `STATUS`
@@ -320,7 +320,15 @@ OK CMDS: PING, HELP, STATUS, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, STOP, IM
 Response format:
 
 ```text
-OK STATUS mode=<u> src=<u> v=<f> w=<f> vbat=<f> imu_en=<u> imu_ok=<u> gz=<f>
+OK STATUS mode=<u> src=<u> v_x1000=<i> w_x1000=<i> vbat_mv=<i> imu_en=<u> imu_ok=<u> gz_cdps=<i> motor_ovr=<u>
+```
+
+#### `DEBUG`
+
+Response format:
+
+```text
+OK DEBUG mode=<u> src=<u> ref=<i>,<i>,<i>,<i> meas=<i>,<i>,<i>,<i> u_x1000=<i>,<i>,<i>,<i> ccr=<u>,<u>,<u>,<u> dir=<u>,<u>,<u>,<u> fault=0xNN
 ```
 
 #### `MODE <mode>`
@@ -339,7 +347,8 @@ Reads or sets IMU enable state.
 
 #### `STOP`
 
-Sends zero PC command.
+- Sends zero PC command.
+- Clears `MOTOR` direct override if it is active.
 
 #### `DRIVE <v> <w>`
 
@@ -347,6 +356,24 @@ Sends zero PC command.
 - clamped to `[-1.0, 1.0]`
 
 `CTRL <v> <w>` is an alias of `DRIVE`.
+
+Response:
+
+```text
+OK DRIVE v_x1000=<i> w_x1000=<i>
+```
+
+#### `MOTOR <left> <right>`
+
+- direct left/right motor output override for quick actuator verification
+- both arguments are parsed as floats
+- clamped to `[-1.0, 1.0]`
+
+Response:
+
+```text
+OK MOTOR l_x1000=<i> r_x1000=<i>
+```
 
 #### `RATE <hz>`
 
@@ -363,15 +390,16 @@ Sends zero PC command.
 When ASCII stream is enabled, `PC_Link_StreamOnce()` emits:
 
 ```text
-TEL,<tick_ms>,<mode>,<src>,<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<enc_l1_pos>,<enc_l2_pos>,<enc_r1_pos>,<enc_r2_pos>,<vel_l1>,<vel_l2>,<vel_r1>,<vel_r2>,<vbatt>,<pct>
+TEL,<tick_ms>,<mode>,<src>,<ax_mg>,<ay_mg>,<az_mg>,<gx_cdps>,<gy_cdps>,<gz_cdps>,<enc_l1_pos>,<enc_l2_pos>,<enc_r1_pos>,<enc_r2_pos>,<vel_l1_cps>,<vel_l2_cps>,<vel_r1_cps>,<vel_r2_cps>,<vbatt_mv>,<pct_x10>
 ```
 
 Units:
 
-- accel: `g`
-- gyro: `dps`
+- accel: `mg`
+- gyro: `cdps`
 - encoder velocity: `counts/s`
-- battery percent: plain percent in range `0..100`
+- battery voltage: `mV`
+- battery percent: `x10`
 
 ## USART1 Debug And FireWater Telemetry
 
@@ -466,5 +494,3 @@ Relevant to serial consumers:
   - world-frame linear acceleration
 
 The current serial protocols do not yet transmit quaternion or world-frame acceleration directly. They are available inside firmware via `Attitude_GetData()`.
-
-
