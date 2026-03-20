@@ -9,6 +9,13 @@
 /* ======== 周期调度（ms） ======== */
 #define CTRL_PERIOD_MS          20u   /* 速度闭环控制周期 */
 #define PS2_SCAN_INTERVAL_MS    50u
+#define PS2_AXIS_DEADZONE      0.05f
+#define PS2_V_AXIS_INVERT         1u
+#define PS2_W_AXIS_INVERT         1u
+#define PS2_V_SCALE             1.0f
+#define PS2_W_SCALE             1.0f
+#define PS2_DPAD_V             0.72f
+#define PS2_DPAD_W             0.58f
 #define IMU_READ_INTERVAL_MS   100u
 #define BATTERY_INTERVAL_MS    500u
 #define OLED_INTERVAL_MS       500u
@@ -33,7 +40,7 @@
 #define BATT_LIMIT_DUTY            0.45f
 
 /* 功能开关 */
-#define PS2_ENABLE               0u
+#define PS2_ENABLE               1u
 #define SELFTEST_ENABLE          0u
 #define SELFTEST_SIGNAL_CHECK    1u
 #define SELFTEST_ROTATE_MS    1000u
@@ -118,7 +125,7 @@
 
 /* ======== 日志/观测 ======== */
 #define TELEMETRY_INTERVAL_MS  200u   /* 输出调参信息的最小间隔（ms） */
-#define TELEMETRY_ENABLE         0u   /* 1=开启，0=关闭 */
+#define TELEMETRY_ENABLE         1u   /* 1=开启，0=关闭 */
 
 /* ======== Link Protocol (binary frame) ======== */
 #define LINK_PROTO_VER          0x01u

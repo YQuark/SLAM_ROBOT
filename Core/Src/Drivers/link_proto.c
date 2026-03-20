@@ -233,6 +233,8 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     uint16_t p = 0;
     int16_t v_q15;
     int16_t w_q15;
+    int16_t v_est_q15;
+    int16_t w_est_q15;
     uint16_t vb_mv = 0u;
     uint16_t pct_x10 = 0u;
     int16_t gz_x10 = 0;
@@ -257,6 +259,8 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
 
     v_q15 = clamp_i16_from_f(st->v_cmd * 32767.0f);
     w_q15 = clamp_i16_from_f(st->w_cmd * 32767.0f);
+    v_est_q15 = clamp_i16_from_f(st->v_est * 32767.0f);
+    w_est_q15 = clamp_i16_from_f(st->w_est * 32767.0f);
 
     put_u32le(&out[p], HAL_GetTick()); p += 4;
     out[p++] = (uint8_t)RobotControl_GetMode();
@@ -268,6 +272,9 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     put_u16le(&out[p], (uint16_t)gz_x10); p += 2;
     out[p++] = st->imu_enabled;
     out[p++] = st->imu_valid;
+    put_u16le(&out[p], (uint16_t)v_est_q15); p += 2;
+    put_u16le(&out[p], (uint16_t)w_est_q15); p += 2;
+    out[p++] = st->enc_fault_mask;
 
     /* 编码器速度数据 (4轮) */
     for (int i = 0; i < ENC_COUNT; i++) {

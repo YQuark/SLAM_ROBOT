@@ -30,6 +30,11 @@ extern "C" {
         uint8_t imu_valid;    /* 数据是否可信 */
         uint8_t imu_err_cnt;  /* 连续错误计数 */
 
+        /* 姿态数据 (来自姿态融合) */
+        float roll;           /* 横滚角 (度) */
+        float pitch;          /* 俯仰角 (度) */
+        float yaw;            /* 航向角 (度) */
+
         /* PI 内部观测（四轮） */
         float ref_cps[4];
         float meas_cps[4];
@@ -42,6 +47,9 @@ extern "C" {
         float yaw_est;
         uint8_t mode_transition_active;
         uint8_t src_transition_active;
+
+        /* 编码器健康状态 */
+        uint8_t enc_fault_mask;  /* 故障掩码 (bit0=L1, bit1=L2, bit2=R1, bit3=R2) */
     } RobotControlState_t;
 
     typedef enum {

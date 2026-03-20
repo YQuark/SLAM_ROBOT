@@ -2,7 +2,7 @@
 #include "encoder.h"
 #include <math.h>
 #include "robot_config.h"
-#include <stdio.h>  // For snprintf
+#include <stdio.h>
 
 /* 这些句柄在 tim.c 里定义，这里只做 extern 声明 */
 extern TIM_HandleTypeDef htim2;
@@ -12,17 +12,16 @@ extern TIM_HandleTypeDef htim5;
 
 Encoder_t g_encoders[ENC_COUNT] =
 {
-    { &htim2, 0, 0, 0.0f, ENC_L1_POLARITY },  /* ENC_L1 : TIM2 (32-bit counter) */
-    { &htim3, 0, 0, 0.0f, ENC_L2_POLARITY },  /* ENC_L2 : TIM3 (16-bit counter) */
-    { &htim4, 0, 0, 0.0f, ENC_R1_POLARITY },  /* ENC_R1 : TIM4 (16-bit counter) */
-    { &htim5, 0, 0, 0.0f, ENC_R2_POLARITY },  /* ENC_R2 : TIM5 (32-bit counter) */
+    { &htim2, 0, 0, 0.0f, ENC_L1_POLARITY, ENC_STATUS_OK, 0, 0, 0, 0, 0.0f, 0.0f },
+    { &htim3, 0, 0, 0.0f, ENC_L2_POLARITY, ENC_STATUS_OK, 0, 0, 0, 0, 0.0f, 0.0f },
+    { &htim4, 0, 0, 0.0f, ENC_R1_POLARITY, ENC_STATUS_OK, 0, 0, 0, 0, 0.0f, 0.0f },
+    { &htim5, 0, 0, 0.0f, ENC_R2_POLARITY, ENC_STATUS_OK, 0, 0, 0, 0, 0.0f, 0.0f },
 };
 
 static float s_vel_bias_cps[ENC_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-/* 统一用“低16位差分”做溢出处理：适用于 16 位定时器，也适用于 32 位定时器的低16位。
- * 控制周期较短时，这个差分不会跨越 32768 counts 的半周，因此符号差分可靠。
- */
+/* ==================== 内部辅助函数 ==================== */
+
 static inline int16_t diff16(uint16_t now16, uint16_t last16)
 {
     return (int16_t)(now16 - last16);
@@ -30,63 +29,53 @@ static inline int16_t diff16(uint16_t now16, uint16_t last16)
 
 static inline uint16_t read_cnt16(TIM_HandleTypeDef *htim)
 {
-    /* TIM2/TIM5 是 32 位，TIM3/TIM4 是 16 位。
-     * 这里统一取低16位，避免你之前那种“先截断再拿截断值当真实计数”的隐患。
-     */
     uint32_t c = __HAL_TIM_GET_COUNTER(htim);
     return (uint16_t)(c & 0xFFFFu);
 }
 
+/* ==================== 初始化 ==================== */
+
 void Encoder_Init(void)
 {
-  static uint8_t debug_once = 0;  /* 只在第一次调用时输出调试信息 */
-  
-  for (int i = 0; i < ENC_COUNT; ++i)    {
+    for (int i = 0; i < ENC_COUNT; ++i) {
         Encoder_t *e = &g_encoders[i];
         e->last_cnt = 0;
         e->pos      = 0;
         e->vel_cps  = 0.0f;
 
+        /* 断线检测初始化 */
+        e->status = ENC_STATUS_OK;
+        e->fault_ticks = 0;
+        e->zero_vel_ticks = 0;
+        e->total_glitches = 0;
+        e->total_disconnects = 0;
+        e->last_valid_vel = 0.0f;
+        e->motor_output = 0.0f;
+
         __HAL_TIM_SET_COUNTER(e->htim, 0);
         HAL_StatusTypeDef status = HAL_TIM_Encoder_Start(e->htim, TIM_CHANNEL_ALL);
 
-        /* 检查启动状态 */
         if (status != HAL_OK) {
-            /* 编码器启动失败 - 通过USART输出警告 */
             extern UART_HandleTypeDef huart1;
             char dbg[64];
-            int n = snprintf(dbg, sizeof(dbg), 
+            int n = snprintf(dbg, sizeof(dbg),
                            "Encoder %d START FAIL, status=%d\r\n", i, (int)status);
             HAL_UART_Transmit(&huart1, (uint8_t*)dbg, n, 100);
         }
 
-        /* 确保UDIS位被清除，否则编码器无法正常工作 */
-        /* 必须在启动编码器后立即清除，因为HAL库可能会设置这个位 */
         e->htim->Instance->CR1 &= ~TIM_CR1_UDIS;
-
-        /* 读一次当前低16位作为起始点，避免第一帧 diff 异常 */
         e->last_cnt = read_cnt16(e->htim);
         s_vel_bias_cps[i] = 0.0f;
-
-        /* 只在第一次调用时输出调试信息（通过静态变量） */
-        if (!debug_once) {
-            /* 这里不能直接输出，需要外部调用 */
-            debug_once = 1;
-        }
     }
 }
 
+/* ==================== 静止校准 ==================== */
+
 uint8_t Encoder_CalibrateStatic(uint32_t duration_ms, uint32_t sample_interval_ms)
 {
-    if (duration_ms < 50u) {
-        duration_ms = 50u;
-    }
-    if (sample_interval_ms == 0u) {
-        sample_interval_ms = 5u;
-    }
-    if (sample_interval_ms > duration_ms) {
-        sample_interval_ms = duration_ms;
-    }
+    if (duration_ms < 50u) duration_ms = 50u;
+    if (sample_interval_ms == 0u) sample_interval_ms = 5u;
+    if (sample_interval_ms > duration_ms) sample_interval_ms = duration_ms;
 
     uint32_t start_ms = HAL_GetTick();
     uint32_t last_ms = start_ms;
@@ -100,9 +89,7 @@ uint8_t Encoder_CalibrateStatic(uint32_t duration_ms, uint32_t sample_interval_m
 
     while ((HAL_GetTick() - start_ms) < duration_ms) {
         uint32_t now_ms = HAL_GetTick();
-        if ((now_ms - last_ms) < sample_interval_ms) {
-            continue;
-        }
+        if ((now_ms - last_ms) < sample_interval_ms) continue;
         last_ms = now_ms;
 
         for (int i = 0; i < ENC_COUNT; ++i) {
@@ -118,7 +105,6 @@ uint8_t Encoder_CalibrateStatic(uint32_t duration_ms, uint32_t sample_interval_m
     for (int i = 0; i < ENC_COUNT; ++i) {
         float bias = (dur_s > 0.0f) ? ((float)sum_counts[i] / dur_s) : 0.0f;
         if (fabsf(bias) > ENC_BOOT_CALIB_MAX_BIAS_CPS) {
-            /* 校准期有明显转动或接线异常，避免把真实运动当作零偏 */
             s_vel_bias_cps[i] = 0.0f;
             all_ok = 0u;
         } else {
@@ -131,14 +117,65 @@ uint8_t Encoder_CalibrateStatic(uint32_t duration_ms, uint32_t sample_interval_m
     return all_ok;
 }
 
+/* ==================== 断线检测逻辑 ==================== */
+
+static void check_encoder_health(Encoder_t *e, float raw_vel)
+{
+    float abs_vel = fabsf(raw_vel);
+    float abs_motor = fabsf(e->motor_output);
+
+    /* 1. 毛刺检测：速度异常大 */
+    if (abs_vel > ENC_GLITCH_THRESHOLD_CPS) {
+        e->status = ENC_STATUS_GLITCH;
+        e->fault_ticks++;
+        e->total_glitches++;
+        return;
+    }
+
+    /* 2. 断线检测：电机有输出但编码器无响应 */
+    if (abs_motor > ENC_MOTOR_THRESHOLD && abs_vel < ENC_DISCONNECT_THRESHOLD_CPS) {
+        e->zero_vel_ticks++;
+        if (e->zero_vel_ticks >= ENC_DISCONNECT_TICKS) {
+            if (e->status != ENC_STATUS_DISCONNECT) {
+                e->total_disconnects++;
+            }
+            e->status = ENC_STATUS_DISCONNECT;
+            e->fault_ticks++;
+        }
+        return;
+    }
+
+    /* 3. 恢复检测 */
+    if (e->status != ENC_STATUS_OK) {
+        /* 需要连续几次正常数据才能恢复 */
+        if (e->fault_ticks > 0) {
+            e->fault_ticks--;
+        }
+        if (e->fault_ticks == 0 && abs_vel < ENC_GLITCH_THRESHOLD_CPS) {
+            e->status = ENC_STATUS_OK;
+            e->zero_vel_ticks = 0;
+        }
+    } else {
+        e->zero_vel_ticks = 0;
+        e->fault_ticks = 0;
+    }
+
+    /* 4. 更新上次有效速度 */
+    if (abs_vel < ENC_GLITCH_THRESHOLD_CPS) {
+        e->last_valid_vel = raw_vel;
+    }
+}
+
+/* ==================== 速度更新 ==================== */
+
 void Encoder_UpdateAll(float dt)
 {
     if (dt <= 0.0f) return;
 
     const float a = (ENC_VEL_LPF_ALPHA >= 0.0f && ENC_VEL_LPF_ALPHA <= 1.0f)
                         ? ENC_VEL_LPF_ALPHA
-                        : 0.80f;           /* fallback if config is out of range */
-    const float cps_limit = 1.5f * MAX_CPS;/* 物理限幅：毛刺丢弃 */
+                        : 0.80f;
+    const float cps_limit = 1.5f * MAX_CPS;
 
     for (int i = 0; i < ENC_COUNT; ++i)
     {
@@ -153,7 +190,17 @@ void Encoder_UpdateAll(float dt)
         float raw = ((float)d16 * (float)e->polarity) / dt;
         raw -= s_vel_bias_cps[i];
 
-        /* 毛刺保护：速度离谱直接丢弃 */
+        /* 健康检测 */
+        check_encoder_health(e, raw);
+
+        /* 如果检测到断线，使用上次有效速度或0 */
+        if (e->status == ENC_STATUS_DISCONNECT) {
+            raw = 0.0f;
+        } else if (e->status == ENC_STATUS_GLITCH) {
+            raw = e->last_valid_vel;
+        }
+
+        /* 毛刺保护 */
         if (fabsf(raw) > cps_limit) {
             raw = 0.0f;
         }
@@ -163,7 +210,62 @@ void Encoder_UpdateAll(float dt)
     }
 }
 
-/* 获取编码器调试信息 */
+/* ==================== 断线检测 API ==================== */
+
+void Encoder_SetMotorOutput(encoder_id_t id, float pwm_output)
+{
+    if (id >= ENC_COUNT) return;
+    g_encoders[id].motor_output = pwm_output;
+}
+
+EncoderStatus_t Encoder_GetStatus(encoder_id_t id)
+{
+    if (id >= ENC_COUNT) return ENC_STATUS_OK;
+    return g_encoders[id].status;
+}
+
+uint8_t Encoder_GetFaultMask(void)
+{
+    uint8_t mask = 0u;
+    for (int i = 0; i < ENC_COUNT; ++i) {
+        if (g_encoders[i].status != ENC_STATUS_OK) {
+            mask |= (1u << i);
+        }
+    }
+    return mask;
+}
+
+const char* Encoder_GetStatusStr(encoder_id_t id)
+{
+    if (id >= ENC_COUNT) return "INVALID";
+
+    switch (g_encoders[id].status) {
+        case ENC_STATUS_OK:         return "OK";
+        case ENC_STATUS_DISCONNECT: return "DISCONNECT";
+        case ENC_STATUS_GLITCH:     return "GLITCH";
+        case ENC_STATUS_RECOVERING: return "RECOVERING";
+        default:                    return "UNKNOWN";
+    }
+}
+
+void Encoder_ResetFault(encoder_id_t id)
+{
+    if (id >= ENC_COUNT) {
+        /* 重置所有 */
+        for (int i = 0; i < ENC_COUNT; ++i) {
+            g_encoders[i].status = ENC_STATUS_OK;
+            g_encoders[i].fault_ticks = 0;
+            g_encoders[i].zero_vel_ticks = 0;
+        }
+    } else {
+        g_encoders[id].status = ENC_STATUS_OK;
+        g_encoders[id].fault_ticks = 0;
+        g_encoders[id].zero_vel_ticks = 0;
+    }
+}
+
+/* ==================== 调试信息 ==================== */
+
 void Encoder_GetDebugInfo(char *buf, size_t size)
 {
     if (!buf || size < 128) return;
@@ -176,52 +278,27 @@ void Encoder_GetDebugInfo(char *buf, size_t size)
              (int)__HAL_TIM_GET_COUNTER(&htim5));
 }
 
-/* 检查编码器GPIO是否正确配置 */
-void Encoder_CheckGPIO(void)
-{
-    /* 通过读取GPIO IDR寄存器来检查引脚状态 */
-    /* 注意：这只是检查引脚的输入状态，不能确认引脚是否配置为编码器模式 */
-    
-    /* 读取引脚状态 */
-    uint16_t pc_idr = GPIOC->IDR;  /* PC6, PC7 */
-    uint16_t pd_idr = GPIOD->IDR;  /* PD12, PD13 */
-    uint16_t pa_idr = GPIOA->IDR;  /* PA0, PA1, PA15 */
-    uint16_t pb_idr = GPIOB->IDR;  /* PB3 */
-    (void)pc_idr;
-    (void)pd_idr;
-    (void)pa_idr;
-    (void)pb_idr;
-    
-    /* 检查编码器引脚是否有信号 */
-    /* 这需要用户手动转动轮子来观察变化 */
-}
-
-/* 验证编码器定时器是否正常工作 */
 uint8_t Encoder_VerifyAll(void)
 {
     uint8_t all_ok = 1;
-    
-    /* 检查每个编码器的定时器状态 */
+
     for (int i = 0; i < ENC_COUNT; ++i)
     {
         Encoder_t *e = &g_encoders[i];
         TIM_HandleTypeDef *htim = e->htim;
-        
-        /* 读取CR1寄存器检查定时器是否使能 */
+
         uint32_t cr1 = htim->Instance->CR1;
         uint8_t enabled = (cr1 & TIM_CR1_CEN) ? 1 : 0;
-        
-        /* 读取SMCR寄存器检查从模式配置 */
+
         uint32_t smcr = htim->Instance->SMCR;
         uint8_t slave_mode = (smcr & TIM_SMCR_SMS) >> TIM_SMCR_SMS_Pos;
-        
-        /* 编码器模式应该是SMS=3 (Encoder mode 3) */
+
         uint8_t encoder_mode = (slave_mode == 3) ? 1 : 0;
-        
+
         if (!enabled || !encoder_mode) {
             all_ok = 0;
         }
     }
-    
+
     return all_ok;
 }

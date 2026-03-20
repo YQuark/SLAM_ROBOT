@@ -34,6 +34,7 @@ static uint32_t s_pc_ts = 0;
 static float s_ps2_v = 0.0f, s_ps2_w = 0.0f;
 static float s_esp_v = 0.0f, s_esp_w = 0.0f;
 static float s_pc_v = 0.0f, s_pc_w = 0.0f;
+static uint8_t s_ps2_active = 0u;
 
 static cmd_source_t s_prev_src = CMD_SRC_NONE;
 static uint32_t s_src_switch_ts = 0;
@@ -134,6 +135,7 @@ void RobotControl_Init(void)
     s_ps2_ts = 0;
     s_esp_ts = 0;
     s_pc_ts = 0;
+    s_ps2_active = 0u;
     s_open_ts = 0;
     s_st.imu_enabled = USE_IMU_DEFAULT;
 }
@@ -172,6 +174,19 @@ void RobotControl_SetCmd_PS2(float v, float w, uint32_t now_ms)
     if (fabsf(w) < 0.06f) {
         w = 0.0f;
     }
+
+    /* PS2 摇杆回中时不持续抢占其他来源，仅在回中瞬间发送一次零指令。 */
+    if ((v == 0.0f) && (w == 0.0f)) {
+        if (s_ps2_active) {
+            s_ps2_v = 0.0f;
+            s_ps2_w = 0.0f;
+            s_ps2_ts = now_ms;
+            s_ps2_active = 0u;
+        }
+        return;
+    }
+
+    s_ps2_active = 1u;
     s_ps2_v = 0.75f * s_ps2_v + 0.25f * v;
     s_ps2_w = 0.75f * s_ps2_w + 0.25f * w;
     s_ps2_ts = now_ms;
@@ -193,15 +208,36 @@ void RobotControl_SetCmd_PC(float v, float w, uint32_t now_ms)
 
 void RobotControl_UpdateIMU(const MPU6050_Data_t *imu, uint8_t ok, uint32_t now_ms)
 {
-    (void) now_ms;
+    static uint32_t last_imu_update_ms = 0u;
+
     if (!s_st.imu_enabled) {
         s_st.imu_valid = 0;
         return;
     }
+
     if (ok && imu != NULL) {
         s_imu_last = *imu;
         s_st.imu_valid = 1;
         s_st.imu_err_cnt = 0;
+
+        /* 计算IMU采样周期 */
+        float dt = 0.01f;  /* 默认10ms */
+        if (last_imu_update_ms > 0u) {
+            uint32_t elapsed = now_ms - last_imu_update_ms;
+            if (elapsed > 0u && elapsed < 1000u) {
+                dt = (float)elapsed / 1000.0f;
+            }
+        }
+        last_imu_update_ms = now_ms;
+
+        /* 姿态融合更新 */
+        Attitude_Update(imu, dt);
+
+        /* 更新融合后的yaw角到观察器 */
+        const Attitude_t *att = Attitude_GetData();
+        if (att->valid) {
+            s_yaw_imu = att->yaw;
+        }
     } else {
         if (++s_st.imu_err_cnt >= 5) {
             s_st.imu_enabled = 0;
@@ -227,6 +263,21 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
     uint8_t pc_ok = (s_pc_ts != 0u) && ((now_ms - s_pc_ts) <= CMD_TIMEOUT_MS);
     uint8_t esp_ok = (s_esp_ts != 0u) && ((now_ms - s_esp_ts) <= CMD_TIMEOUT_MS);
     uint32_t best_ts = 0u;
+
+    /* Active PS2 command has highest priority to avoid being masked by link keepalive zeros. */
+    if (ps2_ok && (fabsf(s_ps2_v) > 0.03f || fabsf(s_ps2_w) > 0.03f)) {
+        *v = s_ps2_v;
+        *w = s_ps2_w;
+        *src = CMD_SRC_PS2;
+        return;
+    }
+
+    if (pc_ok) {
+        *v = s_pc_v;
+        *w = s_pc_w;
+        *src = CMD_SRC_PC;
+        return;
+    }
 
     /* 超时窗口内最新命令优先，避免固定优先级抢占 */
     if (ps2_ok && s_ps2_ts >= best_ts) {
@@ -258,11 +309,18 @@ static void update_observer(float dt)
     s_st.v_est = v_est;
     s_st.w_est = w_est;
 
+    /* 编码器积分yaw */
     s_yaw_enc += w_est * dt;
+
+    /* 使用姿态融合后的yaw角 */
     if (s_st.imu_enabled && s_st.imu_valid) {
-        s_yaw_imu += (s_imu_last.gz_dps / IMU_W_DPS_SCALE) * dt;
+        /* s_yaw_imu 已在 RobotControl_UpdateIMU 中通过 Attitude_Update 更新 */
+        /* 使用互补融合: 编码器权重 YAW_FUSION_ALPHA */
+        s_st.yaw_est = YAW_FUSION_ALPHA * s_yaw_enc + (1.0f - YAW_FUSION_ALPHA) * s_yaw_imu;
+    } else {
+        /* 无IMU时仅使用编码器积分 */
+        s_st.yaw_est = s_yaw_enc;
     }
-    s_st.yaw_est = YAW_FUSION_ALPHA * s_yaw_enc + (1.0f - YAW_FUSION_ALPHA) * s_yaw_imu;
 }
 
 static void stop_outputs_and_observe(void)
@@ -273,6 +331,8 @@ static void stop_outputs_and_observe(void)
         s_st.meas_cps[i] = g_encoders[i].vel_cps;
         s_st.u_out[i] = 0.0f;
         s_last_u[i] = 0.0f;
+        /* 重置编码器电机输出状态 */
+        Encoder_SetMotorOutput((encoder_id_t)i, 0.0f);
     }
 }
 
@@ -310,6 +370,17 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 
     update_observer(dt);
 
+    /* 同步姿态数据到状态 */
+    const Attitude_t *att = Attitude_GetData();
+    if (att->valid) {
+        s_st.roll = att->roll;
+        s_st.pitch = att->pitch;
+        s_st.yaw = att->yaw;
+    }
+
+    /* 同步编码器健康状态 */
+    s_st.enc_fault_mask = Encoder_GetFaultMask();
+
     s_st.mode_transition_active = 0u;
 
     if (s_mode == MODE_IDLE) {
@@ -344,6 +415,12 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         motor_set(MOTOR_L2, vL);
         motor_set(MOTOR_R1, vR);
         motor_set(MOTOR_R2, vR);
+
+        /* 同步编码器电机输出状态 (用于断线检测) */
+        Encoder_SetMotorOutput(ENC_L1, vL);
+        Encoder_SetMotorOutput(ENC_L2, vL);
+        Encoder_SetMotorOutput(ENC_R1, vR);
+        Encoder_SetMotorOutput(ENC_R2, vR);
 
         s_st.ref_cps[ENC_L1] = vL * MAX_CPS;
         s_st.ref_cps[ENC_L2] = vL * MAX_CPS;
@@ -427,6 +504,13 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     motor_set(MOTOR_L2, u_cmd[ENC_L2]);
     motor_set(MOTOR_R1, u_cmd[ENC_R1]);
     motor_set(MOTOR_R2, u_cmd[ENC_R2]);
+
+    /* 同步编码器电机输出状态 (用于断线检测) */
+    Encoder_SetMotorOutput(ENC_L1, u_cmd[ENC_L1]);
+    Encoder_SetMotorOutput(ENC_L2, u_cmd[ENC_L2]);
+    Encoder_SetMotorOutput(ENC_R1, u_cmd[ENC_R1]);
+    Encoder_SetMotorOutput(ENC_R2, u_cmd[ENC_R2]);
+
     for (int i = 0; i < 4; ++i) {
         s_st.u_out[i] = u_cmd[i];
     }
@@ -436,4 +520,3 @@ const RobotControlState_t *RobotControl_GetState(void)
 {
     return &s_st;
 }
-
