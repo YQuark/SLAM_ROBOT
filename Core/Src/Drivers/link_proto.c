@@ -230,14 +230,19 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
                                   const MPU6050_Data_t *imu)
 {
     const RobotControlState_t *st = RobotControl_GetState();
+    const Attitude_t *att = Attitude_GetData();
     uint16_t p = 0;
     int16_t v_q15;
     int16_t w_q15;
     int16_t v_est_q15;
     int16_t w_est_q15;
+    int16_t yaw_est_x100;
     uint16_t vb_mv = 0u;
     uint16_t pct_x10 = 0u;
     int16_t gz_x10 = 0;
+    int16_t raw_ax_mg = 0;
+    int16_t raw_ay_mg = 0;
+    int16_t raw_az_mg = 0;
 
     if (batt) {
         float vb = batt->voltage * 1000.0f;
@@ -252,15 +257,31 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
 
     if (imu) {
         float gz = imu->gz_dps * 10.0f;
+        float ax = imu->ax_g * 1000.0f;
+        float ay = imu->ay_g * 1000.0f;
+        float az = imu->az_g * 1000.0f;
+        if (att && att->valid) {
+            gz = (imu->gz_dps - att->gyro_bias_z) * 10.0f;
+        }
         if (gz > 32767.0f) gz = 32767.0f;
         if (gz < -32768.0f) gz = -32768.0f;
+        if (ax > 32767.0f) ax = 32767.0f;
+        if (ax < -32768.0f) ax = -32768.0f;
+        if (ay > 32767.0f) ay = 32767.0f;
+        if (ay < -32768.0f) ay = -32768.0f;
+        if (az > 32767.0f) az = 32767.0f;
+        if (az < -32768.0f) az = -32768.0f;
         gz_x10 = (int16_t)gz;
+        raw_ax_mg = (int16_t)ax;
+        raw_ay_mg = (int16_t)ay;
+        raw_az_mg = (int16_t)az;
     }
 
     v_q15 = clamp_i16_from_f(st->v_cmd * 32767.0f);
     w_q15 = clamp_i16_from_f(st->w_cmd * 32767.0f);
     v_est_q15 = clamp_i16_from_f(st->v_est * 32767.0f);
     w_est_q15 = clamp_i16_from_f(st->w_est * 32767.0f);
+    yaw_est_x100 = clamp_i16_from_f(st->yaw_est * 100.0f);
 
     put_u32le(&out[p], HAL_GetTick()); p += 4;
     out[p++] = (uint8_t)RobotControl_GetMode();
@@ -281,6 +302,12 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
         int16_t vel = clamp_i16_from_f(g_encoders[i].vel_cps);
         put_u16le(&out[p], (uint16_t)vel); p += 2;
     }
+
+    put_u16le(&out[p], (uint16_t)yaw_est_x100); p += 2;
+    put_u16le(&out[p], (uint16_t)raw_ax_mg); p += 2;
+    put_u16le(&out[p], (uint16_t)raw_ay_mg); p += 2;
+    put_u16le(&out[p], (uint16_t)raw_az_mg); p += 2;
+    out[p++] = st->imu_accel_valid;
 
     *out_len = p;
 }

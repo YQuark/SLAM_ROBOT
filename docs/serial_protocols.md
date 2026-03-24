@@ -1,4 +1,4 @@
-﻿# Serial Protocols
+# Serial Protocols
 
 ## Scope
 
@@ -29,30 +29,21 @@ Project boundary:
 ### USART1
 
 - Purpose: local debug log and telemetry output
-- Pins:
-  - `PB6` -> `USART1_TX`
-  - `PB7` -> `USART1_RX`
 - Typical traffic:
   - boot log
   - MPU6050 status
   - IMU calibration messages
-  - optional telemetry CSV for VOFA+ FireWater
+  - optional FireWater CSV telemetry
 
 ### USART2
 
 - Purpose: ESP-01S bridge link
-- Pins:
-  - `PD5` -> `USART2_TX`
-  - `PA3` -> `USART2_RX`
 - Firmware module: `ESP_Link_*`
 - Protocol: binary framed protocol only
 
 ### USART3
 
 - Purpose: PC host link
-- Pins:
-  - `PB10` -> `USART3_TX`
-  - `PB11` -> `USART3_RX`
 - Firmware module: `PC_Link_*`
 - Protocols:
   - binary framed protocol
@@ -70,6 +61,18 @@ From `Core/Inc/Drivers/robot_config.h`:
 - `ACK_TIMEOUT_MS = 80`
 - `ACK_RETRY_MAX = 2`
 - `FAULT_LOG_CAPACITY = 64`
+
+## Host Odom Contract
+
+The current odometry contract is encoder-dominated.
+
+- Primary odometry source: encoder-derived `v_est` and `w_est`
+- Heading assist: fused `yaw_est` and bias-corrected `gz`
+- IMU heading gating: host must check `imu_valid` before trusting IMU-assisted heading data
+- IMU acceleration gating: host must check `imu_accel_valid` before using any acceleration-derived quantity
+- Accelerometer policy: raw acceleration is debug-only and must not be integrated into host odometry at this stage
+
+This means the host should integrate wheel motion as the primary source and use IMU only to stabilize heading, not to estimate translation.
 
 ## Binary Framed Protocol
 
@@ -118,11 +121,6 @@ Limits:
 - `0x02` `LINK_FLAG_IS_ACK`: ACK frame
 - `0x04` `LINK_FLAG_IS_NACK`: NACK frame
 
-### Sequence Handling
-
-- Duplicate suppression is enabled for all commands except `SET_DRIVE`.
-- If a duplicate request with same `seq` and `msg_type` arrives and a cached response exists, the previous encoded response is resent.
-
 ### Message Types
 
 - `0x01` `PING`
@@ -163,13 +161,21 @@ Limits:
   12. `w_est_q15` `i16`
   13. `enc_fault_mask` `u8`
   14. `enc_vel_cps[4]` `i16 x 4`
+  15. `yaw_est_x100_deg` `i16`
+  16. `raw_accel_mg[3]` `i16 x 3`
+  17. `imu_accel_valid` `u8`
 
 Notes:
 
 - `v_cmd_q15` and `w_cmd_q15` are normalized command values scaled by `32767`.
 - `v_est_q15` and `w_est_q15` are firmware-side estimated chassis linear/angular velocity, also scaled by `32767`.
+- `gz_dps_x10` is bias-corrected when IMU attitude is valid; otherwise it falls back to raw converted gyro rate.
+- `yaw_est_x100_deg` is the fused heading used by firmware and is the preferred host heading input.
 - `enc_fault_mask` exposes encoder fault state bits for host-side diagnostics.
 - `enc_vel_cps` order follows `ENC_L1`, `ENC_L2`, `ENC_R1`, `ENC_R2`.
+- `raw_accel_mg[3]` is debug-only and must not be used for translational odometry yet.
+- `imu_valid` means yaw / gyro assistance is available.
+- `imu_accel_valid` means accelerometer data passed static calibration and current runtime gating.
 
 ### `SET_DRIVE` `0x10`
 
@@ -220,82 +226,25 @@ Behavior:
   11. `tx_fail` `u32`
   12. `last_err` `u16`
 
-### `CLEAR_DIAG` `0x31`
-
-- Request payload: empty
-- Effect: clears snapshot counters for the current link only
-
 ### `GET_FAULT_LOG` `0x32`
 
 - Request payload:
   - byte 0 optional: `cursor`
   - byte 1 optional: `max_records`
 
-Defaults:
+### `CLEAR_DIAG` `0x31`
 
-- `cursor = 0`
-- `max_records = 4`
-- firmware clamps `max_records` to `1..8`
-
-ACK extra payload:
-
-1. `next_cursor` `u8`
-2. `count` `u8`
-3. `dropped_fault_count` `u16`
-4. repeated records:
-   - `ts_ms` `u32`
-   - `link_id` `u8`
-   - `severity` `u8`
-   - `err_code` `u16`
-   - `seq` `u8`
-   - `msg_type` `u8`
-   - `aux0` `u16`
-   - `aux1` `u16`
+- Request payload: empty
+- Effect: clears snapshot counters for the current link only
 
 ### `CLEAR_FAULT_LOG` `0x33`
 
 - Request payload: empty
 - Effect: clears global fault ring buffer
 
-## ACK/NACK Payload
-
-Both ACK and NACK payloads begin with:
-
-1. `seq` `u8`
-2. `err_code` `u16`
-3. `detail` `u8`
-
-For ACK, command-specific response data may follow.
-
-## Binary Error Codes
-
-- `0x0000` `LINK_ERR_OK`
-- `0x0101` `LINK_ERR_PROTO_SOF`
-- `0x0102` `LINK_ERR_PROTO_EOF`
-- `0x0103` `LINK_ERR_PROTO_LEN`
-- `0x0104` `LINK_ERR_PROTO_CRC`
-- `0x0105` `LINK_ERR_PROTO_COBS`
-- `0x0106` `LINK_ERR_PROTO_SEQ`
-- `0x0201` `LINK_ERR_PARSE_UNKNOWN_CMD`
-- `0x0202` `LINK_ERR_PARSE_PAYLOAD_LEN`
-- `0x0203` `LINK_ERR_PARSE_PARAM_RANGE`
-- `0x0301` `LINK_ERR_CTRL_MODE_REJECT`
-- `0x0401` `LINK_ERR_UART_IO`
-- `0x0501` `LINK_ERR_SAFE_UV_LIMIT`
-- `0x0502` `LINK_ERR_SAFE_UV_CUTOFF`
-- `0x0601` `LINK_ERR_RES_RX_OVERFLOW`
-- `0x0602` `LINK_ERR_RES_LOG_OVERFLOW`
-
 ## USART3 ASCII Console
 
 ASCII parsing is implemented in `Core/Src/Drivers/pc_link.c`.
-
-Rules:
-
-- line oriented
-- accepts printable ASCII and tab
-- line end: `CR` or `LF`
-- binary parser runs first, ASCII parsing is best-effort
 
 ### Commands
 
@@ -320,8 +269,14 @@ OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, M
 Response format:
 
 ```text
-OK STATUS mode=<u> src=<u> v_x1000=<i> w_x1000=<i> vbat_mv=<i> imu_en=<u> imu_ok=<u> gz_cdps=<i> motor_ovr=<u>
+OK STATUS mode=<u> src=<u> v_cmd_x1000=<i> w_cmd_x1000=<i> v_est_x1000=<i> w_est_x1000=<i> yaw_x100=<i> vbat_mv=<i> imu_en=<u> imu_ok=<u> imu_acc_ok=<u> gz_cdps=<i> enc_fault=0xNN motor_ovr=<u>
 ```
+
+Host usage notes:
+
+- `v_est_x1000` / `w_est_x1000` are the odometry-ready motion estimates.
+- `yaw_x100` is the fused heading that should be preferred over integrating raw gyro on the host.
+- `gz_cdps` is the bias-corrected Z gyro when IMU attitude is valid.
 
 #### `DEBUG`
 
@@ -331,166 +286,56 @@ Response format:
 OK DEBUG mode=<u> src=<u> ref=<i>,<i>,<i>,<i> meas=<i>,<i>,<i>,<i> u_x1000=<i>,<i>,<i>,<i> ccr=<u>,<u>,<u>,<u> dir=<u>,<u>,<u>,<u> fault=0xNN
 ```
 
-#### `MODE <mode>`
-
-Accepted values:
-
-- numeric: `0`, `1`, `2`
-- aliases:
-  - `IDLE`
-  - `OPEN`, `OPEN_LOOP`, `OL`
-  - `CLOSED`, `CLOSED_LOOP`, `CL`
-
-#### `IMU <0|1|OFF|ON>`
-
-Reads or sets IMU enable state.
-
-#### `STOP`
-
-- Sends zero PC command.
-- Clears `MOTOR` direct override if it is active.
-
-#### `DRIVE <v> <w>`
-
-- `v` and `w` are parsed as floats
-- clamped to `[-1.0, 1.0]`
-
-`CTRL <v> <w>` is an alias of `DRIVE`.
-
-Response:
-
-```text
-OK DRIVE v_x1000=<i> w_x1000=<i>
-```
-
-#### `MOTOR <left> <right>`
-
-- direct left/right motor output override for quick actuator verification
-- both arguments are parsed as floats
-- clamped to `[-1.0, 1.0]`
-
-Response:
-
-```text
-OK MOTOR l_x1000=<i> r_x1000=<i>
-```
-
-#### `RATE <hz>`
-
-- valid range: `1..50`
-
 #### `STREAM <ON|OFF> [hz]`
-
-- `STREAM ON`
-- `STREAM ON 20`
-- `STREAM OFF`
-
-### Streaming Telemetry Line
 
 When ASCII stream is enabled, `PC_Link_StreamOnce()` emits:
 
 ```text
-TEL,<tick_ms>,<mode>,<src>,<ax_mg>,<ay_mg>,<az_mg>,<gx_cdps>,<gy_cdps>,<gz_cdps>,<enc_l1_pos>,<enc_l2_pos>,<enc_r1_pos>,<enc_r2_pos>,<vel_l1_cps>,<vel_l2_cps>,<vel_r1_cps>,<vel_r2_cps>,<vbatt_mv>,<pct_x10>
+TEL,<tick_ms>,<mode>,<src>,<imu_valid>,<imu_accel_valid>,<v_est_x1000>,<w_est_x1000>,<yaw_est_x100_deg>,<gz_bias_cdps>,<vel_l1_cps>,<vel_l2_cps>,<vel_r1_cps>,<vel_r2_cps>,<enc_fault_mask>,<vbatt_mv>,<pct_x10>,<raw_ax_mg>,<raw_ay_mg>,<raw_az_mg>
 ```
 
 Units:
 
-- accel: `mg`
-- gyro: `cdps`
+- `v_est_x1000`: normalized linear velocity estimate scaled by `1000`
+- `w_est_x1000`: normalized angular velocity estimate scaled by `1000`
+- `yaw_est_x100_deg`: fused heading in degrees scaled by `100`
+- `gz_bias_cdps`: bias-corrected Z gyro in centi-deg/s
+- `imu_valid`: yaw / gyro assistance availability flag
+- `imu_accel_valid`: accelerometer availability flag
 - encoder velocity: `counts/s`
 - battery voltage: `mV`
 - battery percent: `x10`
+- raw accel: `mg`, debug-only
+
+ASCII odom consumer notes:
+
+- Odom-ready fields are `imu_valid`, `v_est_x1000`, `w_est_x1000`, `yaw_est_x100_deg`, `gz_bias_cdps`, wheel velocities, and `enc_fault_mask`.
+- `raw_ax_mg`, `raw_ay_mg`, and `raw_az_mg` are transmitted only for diagnosis.
+- If IMU calibration is incomplete or invalid, `imu_valid=0` and `gz_bias_cdps=0`.
+- If the accelerometer fails static calibration or later runtime gating, `imu_accel_valid=0` even when `imu_valid=1`.
 
 ## USART1 Debug And FireWater Telemetry
 
 `USART1` is used for plain text boot/debug output and CSV telemetry.
 
-### Boot / Runtime Text Messages
-
-Examples emitted by firmware:
-
-- reset cause
-- MPU6050 init result
-- MPU6050 register dump
-- IMU calibration start / success / failure
-- SSD1306 init result
-- PS2 status
-
-### FireWater CSV
-
-When `TELEMETRY_ENABLE = 1`, `main.c` emits one CSV line every `TELEMETRY_INTERVAL_MS`.
-
-Current field order:
-
-1. `tick_ms`
-2. `imu_valid`
-3. `ax_mg`
-4. `ay_mg`
-5. `az_mg`
-6. `gx_cdps`
-7. `gy_cdps`
-8. `gz_cdps`
-9. `enc0_cps`
-10. `enc1_cps`
-11. `enc2_cps`
-12. `enc3_cps`
-13. `v_cmd_x1000`
-14. `w_cmd_x1000`
-15. `u0_x1000`
-16. `u1_x1000`
-17. `u2_x1000`
-18. `u3_x1000`
-19. `roll_x100_deg`
-20. `pitch_x100_deg`
-21. `yaw_x100_deg`
-22. `battery_mv`
-23. `battery_pct_x10`
-24. `enc_fault_mask`
-
-Notes:
-
-- `mg` means milli-g
-- `cdps` means centi-deg/s
-- this stream is intended for tools such as VOFA+ FireWater
-
-## ESP-01S Side Expectations
-
-`ESP01S/ESP01S/ESP01S.ino` implements the peer for the same binary protocol.
-
-Observed behavior:
-
-- `SET_DRIVE` and `SET_MODE` may be sent without ACK request
-- `GET_STATUS` is sent with ACK request
-- COBS framing and constants match firmware:
-  - `SOF = 0xA5`
-  - `EOF = 0x5A`
-  - `VER = 0x01`
-
-## Fault And Diagnostic Semantics
-
-Diagnostic counters are link-local. Fault log is global across links.
-
-Fault severities:
-
-- `0` info
-- `1` warn
-- `2` error
-- `3` fatal
-
-Important implementation detail:
-
-- If the fault ring buffer is full, new records overwrite oldest entries and increment `dropped_fault_count`.
+FireWater CSV remains a debug stream. It is not the host odometry contract.
 
 ## IMU Data Path
 
 Relevant to serial consumers:
 
 - IMU calibration starts at boot in `main.c`
-- calibration now runs for a fixed duration using static detection
-- attitude output includes:
-  - `roll`, `pitch`, `yaw`
-  - quaternion `qw`, `qx`, `qy`, `qz`
-  - body-frame linear acceleration
-  - world-frame linear acceleration
+- calibration runs for a fixed duration using static detection
+- attitude output includes `roll`, `pitch`, `yaw`, quaternion, body-frame linear acceleration, and world-frame linear acceleration
 
-The current serial protocols do not yet transmit quaternion or world-frame acceleration directly. They are available inside firmware via `Attitude_GetData()`.
+Current policy:
+
+- encoder odometry is primary
+- IMU is used for heading assistance only
+- bias-corrected gyro is exported for host use
+- accelerometer values are debug-only until the abnormal acceleration issue is resolved
+- firmware now distinguishes `imu_valid` (heading usable) from `imu_accel_valid` (acceleration usable)
+
+Quaternion and world-frame linear acceleration remain available inside firmware via `Attitude_GetData()`, but they are not part of the current host odometry contract.
+
+

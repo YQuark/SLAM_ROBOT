@@ -26,9 +26,10 @@ extern "C" {
         cmd_source_t src;
 
         /* IMU 状态 */
-        uint8_t imu_enabled;  /* 是否参与控制 */
-        uint8_t imu_valid;    /* 数据是否可信 */
-        uint8_t imu_err_cnt;  /* 连续错误计数 */
+        uint8_t imu_enabled;      /* 是否参与控制 */
+        uint8_t imu_valid;        /* yaw / gyro 是否可用 */
+        uint8_t imu_accel_valid;  /* accel 是否可用 */
+        uint8_t imu_err_cnt;      /* 连续错误计数 */
 
         /* 姿态数据 (来自姿态融合) */
         float roll;           /* 横滚角 (度) */

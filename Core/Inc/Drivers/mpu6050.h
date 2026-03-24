@@ -77,6 +77,7 @@ typedef struct {
     float world_linear_az;
 
     uint8_t valid;
+    uint8_t accel_valid;
 } Attitude_t;
 
 typedef enum {

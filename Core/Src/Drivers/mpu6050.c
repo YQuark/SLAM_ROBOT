@@ -7,6 +7,11 @@
 
 #define DEG2RAD 0.0174532925f
 #define RAD2DEG 57.2957795f
+#define IMU_ACCEL_BIAS_CALIB_MIN_G 0.85f
+#define IMU_ACCEL_BIAS_CALIB_MAX_G 1.15f
+#define IMU_ACCEL_CORR_NORM_MIN_G 0.60f
+#define IMU_ACCEL_CORR_NORM_MAX_G 1.60f
+#define IMU_ACCEL_AXIS_SAT_G      1.95f
 
 static Attitude_t s_attitude = {0};
 static IMU_Calib_t s_calib = {0};
@@ -26,6 +31,7 @@ static void QuaternionToEuler(float qw, float qx, float qy, float qz, float *rol
 static void RotateBodyToWorldByQuat(float qw, float qx, float qy, float qz,
                                     float bx, float by, float bz,
                                     float *wx, float *wy, float *wz);
+static void IntegrateGyroOnly(float gx_dps, float gy_dps, float gz_dps, float dt);
 static void MahonyUpdate(float gx_dps, float gy_dps, float gz_dps,
                          float ax, float ay, float az, float dt);
 
@@ -147,22 +153,34 @@ void IMU_Print(const MPU6050_Data_t *d)
 void IMU_PrintRawDebug(const MPU6050_Data_t *d)
 {
     char buf[220];
-    float accel_norm;
+    int32_t ax_mg;
+    int32_t ay_mg;
+    int32_t az_mg;
+    int32_t gx_cdps;
+    int32_t gy_cdps;
+    int32_t gz_cdps;
+    int32_t accel_norm_mg;
     int n;
 
     if (d == NULL) {
         return;
     }
 
-    accel_norm = sqrtf(d->ax_g * d->ax_g + d->ay_g * d->ay_g + d->az_g * d->az_g);
+    ax_mg = (int32_t)(d->ax_g * 1000.0f);
+    ay_mg = (int32_t)(d->ay_g * 1000.0f);
+    az_mg = (int32_t)(d->az_g * 1000.0f);
+    gx_cdps = (int32_t)(d->gx_dps * 100.0f);
+    gy_cdps = (int32_t)(d->gy_dps * 100.0f);
+    gz_cdps = (int32_t)(d->gz_dps * 100.0f);
+    accel_norm_mg = (int32_t)(sqrtf(d->ax_g * d->ax_g + d->ay_g * d->ay_g + d->az_g * d->az_g) * 1000.0f);
     n = snprintf(buf, sizeof(buf),
                  "IMU RAW ax=%d ay=%d az=%d gx=%d gy=%d gz=%d | "
-                 "ACC[g]=%.3f,%.3f,%.3f | GYRO[dps]=%.2f,%.2f,%.2f | |a|=%.3f\r\n",
+                 "ACC[mg]=%ld,%ld,%ld | GYRO[cdps]=%ld,%ld,%ld | |a|[mg]=%ld\r\n",
                  d->ax_raw, d->ay_raw, d->az_raw,
                  d->gx_raw, d->gy_raw, d->gz_raw,
-                 d->ax_g, d->ay_g, d->az_g,
-                 d->gx_dps, d->gy_dps, d->gz_dps,
-                 accel_norm);
+                 (long)ax_mg, (long)ay_mg, (long)az_mg,
+                 (long)gx_cdps, (long)gy_cdps, (long)gz_cdps,
+                 (long)accel_norm_mg);
     HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 100);
 }
 
@@ -192,6 +210,7 @@ void Attitude_Init(void)
     s_attitude.world_linear_ay = 0.0f;
     s_attitude.world_linear_az = 0.0f;
     s_attitude.valid = 0u;
+    s_attitude.accel_valid = 0u;
 
     s_calib.state = IMU_CALIB_IDLE;
     s_calib.sample_count = 0u;
@@ -325,6 +344,35 @@ static void RotateBodyToWorldByQuat(float qw, float qx, float qy, float qz,
     *wz = r31 * bx + r32 * by + r33 * bz;
 }
 
+static void IntegrateGyroOnly(float gx_dps, float gy_dps, float gz_dps, float dt)
+{
+    float qw = s_attitude.qw;
+    float qx = s_attitude.qx;
+    float qy = s_attitude.qy;
+    float qz = s_attitude.qz;
+    float old_qw = qw;
+    float old_qx = qx;
+    float old_qy = qy;
+    float old_qz = qz;
+    float gx = gx_dps * DEG2RAD;
+    float gy = gy_dps * DEG2RAD;
+    float gz = gz_dps * DEG2RAD;
+    float half_dt = 0.5f * dt;
+
+    qw += (-old_qx * gx - old_qy * gy - old_qz * gz) * half_dt;
+    qx += (old_qw * gx + old_qy * gz - old_qz * gy) * half_dt;
+    qy += (old_qw * gy - old_qx * gz + old_qz * gx) * half_dt;
+    qz += (old_qw * gz + old_qx * gy - old_qy * gx) * half_dt;
+
+    QuaternionNormalize(&qw, &qx, &qy, &qz);
+
+    s_attitude.qw = qw;
+    s_attitude.qx = qx;
+    s_attitude.qy = qy;
+    s_attitude.qz = qz;
+    QuaternionToEuler(qw, qx, qy, qz, &s_attitude.roll, &s_attitude.pitch, &s_attitude.yaw);
+}
+
 static void MahonyUpdate(float gx_dps, float gy_dps, float gz_dps,
                          float ax, float ay, float az, float dt)
 {
@@ -403,7 +451,11 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
     float gravity_x;
     float gravity_y;
     float gravity_z;
-    uint8_t accel_bad;
+    float avg_ax;
+    float avg_ay;
+    float avg_az;
+    float avg_accel_magnitude;
+    uint8_t accel_trustworthy;
     uint8_t gyro_bad;
 
     if (imu == NULL || dt <= 0.0f) {
@@ -419,6 +471,7 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
         s_attitude.world_linear_ax = 0.0f;
         s_attitude.world_linear_ay = 0.0f;
         s_attitude.world_linear_az = 0.0f;
+        s_attitude.accel_valid = 0u;
         return;
     }
 
@@ -427,21 +480,15 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
         gyro_abs = fabsf(imu->gx_dps) + fabsf(imu->gy_dps) + fabsf(imu->gz_dps);
         s_last_calib_accel_norm = accel_magnitude;
         s_last_calib_gyro_abs = gyro_abs;
-        accel_bad = (fabsf(accel_magnitude - 1.0f) > IMU_CALIB_MAX_MOTION) ? 1u : 0u;
         gyro_bad = (gyro_abs > (3.0f * IMU_CALIB_MAX_GYRO_DPS)) ? 1u : 0u;
 
-        if (accel_bad || gyro_bad) {
+        if (gyro_bad) {
             s_calib.motion_detected++;
             if (s_calib.motion_detected > 10u) {
                 s_calib.state = IMU_CALIB_FAILED;
                 s_attitude.valid = 0u;
-                if (accel_bad && gyro_bad) {
-                    s_calib_fail_reason = IMU_CALIB_FAIL_BOTH;
-                } else if (accel_bad) {
-                    s_calib_fail_reason = IMU_CALIB_FAIL_ACCEL;
-                } else {
-                    s_calib_fail_reason = IMU_CALIB_FAIL_GYRO;
-                }
+                s_attitude.accel_valid = 0u;
+                s_calib_fail_reason = IMU_CALIB_FAIL_GYRO;
                 return;
             }
         } else {
@@ -463,9 +510,23 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
             s_attitude.gyro_bias_y = s_calib.sum_gy / (float)s_calib.sample_count;
             s_attitude.gyro_bias_z = s_calib.sum_gz / (float)s_calib.sample_count;
 
-            s_attitude.accel_bias_x = s_calib.sum_ax / (float)s_calib.sample_count;
-            s_attitude.accel_bias_y = s_calib.sum_ay / (float)s_calib.sample_count;
-            s_attitude.accel_bias_z = s_calib.sum_az / (float)s_calib.sample_count - 1.0f;
+            avg_ax = s_calib.sum_ax / (float)s_calib.sample_count;
+            avg_ay = s_calib.sum_ay / (float)s_calib.sample_count;
+            avg_az = s_calib.sum_az / (float)s_calib.sample_count;
+            avg_accel_magnitude = sqrtf(avg_ax * avg_ax + avg_ay * avg_ay + avg_az * avg_az);
+
+            if (avg_accel_magnitude >= IMU_ACCEL_BIAS_CALIB_MIN_G &&
+                avg_accel_magnitude <= IMU_ACCEL_BIAS_CALIB_MAX_G) {
+                s_attitude.accel_bias_x = avg_ax;
+                s_attitude.accel_bias_y = avg_ay;
+                s_attitude.accel_bias_z = avg_az - 1.0f;
+                s_attitude.accel_valid = 1u;
+            } else {
+                s_attitude.accel_bias_x = 0.0f;
+                s_attitude.accel_bias_y = 0.0f;
+                s_attitude.accel_bias_z = 0.0f;
+                s_attitude.accel_valid = 0u;
+            }
 
             s_calib.state = IMU_CALIB_DONE;
             s_attitude.valid = 1u;
@@ -476,12 +537,18 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
 
             {
                 char buf[160];
+                int32_t bias_x_cdps = (int32_t)(s_attitude.gyro_bias_x * 100.0f);
+                int32_t bias_y_cdps = (int32_t)(s_attitude.gyro_bias_y * 100.0f);
+                int32_t bias_z_cdps = (int32_t)(s_attitude.gyro_bias_z * 100.0f);
+                int32_t accel_norm_mg = (int32_t)(avg_accel_magnitude * 1000.0f);
                 int n = snprintf(buf, sizeof(buf),
-                                 "IMU Calib DONE: dt=%.2fs bias_g=%.2f,%.2f,%.2f dps\r\n",
-                                 s_calib.elapsed_s,
-                                 s_attitude.gyro_bias_x,
-                                 s_attitude.gyro_bias_y,
-                                 s_attitude.gyro_bias_z);
+                                 "IMU Calib DONE: dt_ms=%lu gyro_bias_cdps=%ld,%ld,%ld accel_ok=%u accel_norm_mg=%ld\r\n",
+                                 (unsigned long)(s_calib.elapsed_s * 1000.0f),
+                                 (long)bias_x_cdps,
+                                 (long)bias_y_cdps,
+                                 (long)bias_z_cdps,
+                                 (unsigned int)s_attitude.accel_valid,
+                                 (long)accel_norm_mg);
                 HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 100);
             }
         }
@@ -495,14 +562,25 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
     ax = imu->ax_g - s_attitude.accel_bias_x;
     ay = imu->ay_g - s_attitude.accel_bias_y;
     az = imu->az_g - s_attitude.accel_bias_z;
+    accel_magnitude = sqrtf(ax * ax + ay * ay + az * az);
+    accel_trustworthy = s_attitude.accel_valid ? 1u : 0u;
+    if (fabsf(ax) >= IMU_ACCEL_AXIS_SAT_G ||
+        fabsf(ay) >= IMU_ACCEL_AXIS_SAT_G ||
+        fabsf(az) >= IMU_ACCEL_AXIS_SAT_G ||
+        accel_magnitude < IMU_ACCEL_CORR_NORM_MIN_G ||
+        accel_magnitude > IMU_ACCEL_CORR_NORM_MAX_G) {
+        accel_trustworthy = 0u;
+    }
 
     if (s_fusion_mode == IMU_FILTER_COMPLEMENTARY) {
-        Attitude_UpdateFromAccel(ax, ay, az, &acc_roll, &acc_pitch);
         s_attitude.roll += gx * dt;
         s_attitude.pitch += gy * dt;
         s_attitude.yaw += gz * dt;
-        s_attitude.roll = IMU_GYRO_WEIGHT * s_attitude.roll + (1.0f - IMU_GYRO_WEIGHT) * acc_roll;
-        s_attitude.pitch = IMU_GYRO_WEIGHT * s_attitude.pitch + (1.0f - IMU_GYRO_WEIGHT) * acc_pitch;
+        if (accel_trustworthy) {
+            Attitude_UpdateFromAccel(ax, ay, az, &acc_roll, &acc_pitch);
+            s_attitude.roll = IMU_GYRO_WEIGHT * s_attitude.roll + (1.0f - IMU_GYRO_WEIGHT) * acc_roll;
+            s_attitude.pitch = IMU_GYRO_WEIGHT * s_attitude.pitch + (1.0f - IMU_GYRO_WEIGHT) * acc_pitch;
+        }
 
         while (s_attitude.yaw > 180.0f) s_attitude.yaw -= 360.0f;
         while (s_attitude.yaw < -180.0f) s_attitude.yaw += 360.0f;
@@ -511,7 +589,23 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
                           &s_attitude.qw, &s_attitude.qx, &s_attitude.qy, &s_attitude.qz);
         QuaternionNormalize(&s_attitude.qw, &s_attitude.qx, &s_attitude.qy, &s_attitude.qz);
     } else {
-        MahonyUpdate(gx, gy, gz, ax, ay, az, dt);
+        if (accel_trustworthy) {
+            MahonyUpdate(gx, gy, gz, ax, ay, az, dt);
+        } else {
+            IntegrateGyroOnly(gx, gy, gz, dt);
+        }
+    }
+
+    if (!accel_trustworthy) {
+        s_attitude.linear_ax = 0.0f;
+        s_attitude.linear_ay = 0.0f;
+        s_attitude.linear_az = 0.0f;
+        s_attitude.world_linear_ax = 0.0f;
+        s_attitude.world_linear_ay = 0.0f;
+        s_attitude.world_linear_az = 0.0f;
+        s_attitude.valid = 1u;
+        s_attitude.accel_valid = 0u;
+        return;
     }
 
     gravity_x = 2.0f * (s_attitude.qx * s_attitude.qz - s_attitude.qw * s_attitude.qy);
@@ -530,6 +624,7 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
                             &s_attitude.world_linear_az);
 
     s_attitude.valid = 1u;
+    s_attitude.accel_valid = 1u;
 }
 
 const Attitude_t *Attitude_GetData(void)

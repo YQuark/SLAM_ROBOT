@@ -44,7 +44,7 @@ static void pc_uart_send(const char *text)
 
 static void pc_uart_sendf(const char *fmt, ...)
 {
-    char out[160];
+    char out[256];
     va_list args;
     int n;
 
@@ -169,32 +169,40 @@ static void PC_Link_StreamOnce(const BatteryStatus_t *batt,
                                const MPU6050_Data_t *imu)
 {
     const RobotControlState_t *st = RobotControl_GetState();
+    const Attitude_t *att = Attitude_GetData();
     int32_t vbatt_mv = batt ? scaled_i32(batt->voltage, 1000.0f) : 0;
     int32_t pct_x10 = batt ? scaled_i32(batt->percent, 10.0f) : 0;
-    int32_t ax_mg = imu ? scaled_i32(imu->ax_g, 1000.0f) : 0;
-    int32_t ay_mg = imu ? scaled_i32(imu->ay_g, 1000.0f) : 0;
-    int32_t az_mg = imu ? scaled_i32(imu->az_g, 1000.0f) : 0;
-    int32_t gx_cdps = imu ? scaled_i32(imu->gx_dps, 100.0f) : 0;
-    int32_t gy_cdps = imu ? scaled_i32(imu->gy_dps, 100.0f) : 0;
-    int32_t gz_cdps = imu ? scaled_i32(imu->gz_dps, 100.0f) : 0;
+    int32_t v_est_x1000 = scaled_i32(st->v_est, 1000.0f);
+    int32_t w_est_x1000 = scaled_i32(st->w_est, 1000.0f);
+    int32_t yaw_est_x100 = scaled_i32(st->yaw_est, 100.0f);
+    int32_t gz_cdps = 0;
+    int32_t raw_ax_mg = imu ? scaled_i32(imu->ax_g, 1000.0f) : 0;
+    int32_t raw_ay_mg = imu ? scaled_i32(imu->ay_g, 1000.0f) : 0;
+    int32_t raw_az_mg = imu ? scaled_i32(imu->az_g, 1000.0f) : 0;
     int32_t vel_l1 = scaled_i32(g_encoders[ENC_L1].vel_cps, 1.0f);
     int32_t vel_l2 = scaled_i32(g_encoders[ENC_L2].vel_cps, 1.0f);
     int32_t vel_r1 = scaled_i32(g_encoders[ENC_R1].vel_cps, 1.0f);
     int32_t vel_r2 = scaled_i32(g_encoders[ENC_R2].vel_cps, 1.0f);
 
+    if (imu && att && att->valid) {
+        gz_cdps = scaled_i32(imu->gz_dps - att->gyro_bias_z, 100.0f);
+    }
+
     pc_uart_sendf(
-        "TEL,%lu,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+        "TEL,%lu,%u,%u,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
         (unsigned long)HAL_GetTick(),
         (unsigned int)RobotControl_GetMode(),
         (unsigned int)st->src,
-        (long)ax_mg, (long)ay_mg, (long)az_mg,
-        (long)gx_cdps, (long)gy_cdps, (long)gz_cdps,
-        (long)g_encoders[ENC_L1].pos,
-        (long)g_encoders[ENC_L2].pos,
-        (long)g_encoders[ENC_R1].pos,
-        (long)g_encoders[ENC_R2].pos,
+        (unsigned int)st->imu_valid,
+        (unsigned int)st->imu_accel_valid,
+        (long)v_est_x1000,
+        (long)w_est_x1000,
+        (long)yaw_est_x100,
+        (long)gz_cdps,
         (long)vel_l1, (long)vel_l2, (long)vel_r1, (long)vel_r2,
-        (long)vbatt_mv, (long)pct_x10);
+        (long)st->enc_fault_mask,
+        (long)vbatt_mv, (long)pct_x10,
+        (long)raw_ax_mg, (long)raw_ay_mg, (long)raw_az_mg);
 }
 
 static void PC_Link_StreamTick(const BatteryStatus_t *batt,
@@ -301,15 +309,21 @@ static void PC_Link_HandleAsciiLine(char *line,
 
     if (str_ieq(cmd, "STATUS")) {
         st = RobotControl_GetState();
-        pc_uart_sendf("OK STATUS mode=%u src=%u v_x1000=%ld w_x1000=%ld vbat_mv=%ld imu_en=%u imu_ok=%u gz_cdps=%ld motor_ovr=%u\r\n",
+        pc_uart_sendf("OK STATUS mode=%u src=%u v_cmd_x1000=%ld w_cmd_x1000=%ld v_est_x1000=%ld w_est_x1000=%ld yaw_x100=%ld vbat_mv=%ld imu_en=%u imu_ok=%u imu_acc_ok=%u gz_cdps=%ld enc_fault=0x%02X motor_ovr=%u\r\n",
                       (unsigned int)RobotControl_GetMode(),
                       (unsigned int)st->src,
                       (long)scaled_i32(st->v_cmd, 1000.0f),
                       (long)scaled_i32(st->w_cmd, 1000.0f),
+                      (long)scaled_i32(st->v_est, 1000.0f),
+                      (long)scaled_i32(st->w_est, 1000.0f),
+                      (long)scaled_i32(st->yaw_est, 100.0f),
                       (long)(batt ? scaled_i32(batt->voltage, 1000.0f) : 0),
                       (unsigned int)st->imu_enabled,
                       (unsigned int)st->imu_valid,
-                      (long)(imu ? scaled_i32(imu->gz_dps, 100.0f) : 0),
+                      (unsigned int)st->imu_accel_valid,
+                      (long)((imu && Attitude_GetData()->valid) ?
+                          scaled_i32(imu->gz_dps - Attitude_GetData()->gyro_bias_z, 100.0f) : 0),
+                      (unsigned int)st->enc_fault_mask,
                       (unsigned int)s_motor_override);
         return;
     }

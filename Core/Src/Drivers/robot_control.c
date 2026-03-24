@@ -69,6 +69,17 @@ static inline float signf_nonzero(float x)
     return (x >= 0.0f) ? 1.0f : -1.0f;
 }
 
+static inline float wrap_angle_deg(float angle)
+{
+    while (angle > 180.0f) {
+        angle -= 360.0f;
+    }
+    while (angle < -180.0f) {
+        angle += 360.0f;
+    }
+    return angle;
+}
+
 static float slew_limit(float current, float target, float rate_per_s, float dt)
 {
     float max_step = rate_per_s * dt;
@@ -209,15 +220,16 @@ void RobotControl_SetCmd_PC(float v, float w, uint32_t now_ms)
 void RobotControl_UpdateIMU(const MPU6050_Data_t *imu, uint8_t ok, uint32_t now_ms)
 {
     static uint32_t last_imu_update_ms = 0u;
+    const Attitude_t *att;
 
     if (!s_st.imu_enabled) {
         s_st.imu_valid = 0;
+        s_st.imu_accel_valid = 0;
         return;
     }
 
     if (ok && imu != NULL) {
         s_imu_last = *imu;
-        s_st.imu_valid = 1;
         s_st.imu_err_cnt = 0;
 
         /* 计算IMU采样周期 */
@@ -234,14 +246,19 @@ void RobotControl_UpdateIMU(const MPU6050_Data_t *imu, uint8_t ok, uint32_t now_
         Attitude_Update(imu, dt);
 
         /* 更新融合后的yaw角到观察器 */
-        const Attitude_t *att = Attitude_GetData();
+        att = Attitude_GetData();
+        s_st.imu_valid = att->valid ? 1u : 0u;
+        s_st.imu_accel_valid = att->accel_valid ? 1u : 0u;
         if (att->valid) {
             s_yaw_imu = att->yaw;
         }
     } else {
+        s_st.imu_valid = 0u;
+        s_st.imu_accel_valid = 0u;
         if (++s_st.imu_err_cnt >= 5) {
             s_st.imu_enabled = 0;
             s_st.imu_valid = 0;
+            s_st.imu_accel_valid = 0;
         }
     }
 }
@@ -251,6 +268,7 @@ void RobotControl_SetIMUEnabled(uint8_t en)
     s_st.imu_enabled = en;
     if (!en) {
         s_st.imu_valid = 0;
+        s_st.imu_accel_valid = 0;
     }
 }
 
@@ -259,7 +277,9 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
     *v = 0.0f;
     *w = 0.0f;
     *src = CMD_SRC_NONE;
-    uint8_t ps2_ok = (s_ps2_ts != 0u) && ((now_ms - s_ps2_ts) <= CMD_TIMEOUT_MS);
+    uint8_t ps2_ok = s_ps2_active &&
+                     (s_ps2_ts != 0u) &&
+                     ((now_ms - s_ps2_ts) <= CMD_TIMEOUT_MS);
     uint8_t pc_ok = (s_pc_ts != 0u) && ((now_ms - s_pc_ts) <= CMD_TIMEOUT_MS);
     uint8_t esp_ok = (s_esp_ts != 0u) && ((now_ms - s_esp_ts) <= CMD_TIMEOUT_MS);
     uint32_t best_ts = 0u;
@@ -377,6 +397,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         s_st.pitch = att->pitch;
         s_st.yaw = att->yaw;
     }
+    s_st.imu_accel_valid = att->accel_valid ? 1u : 0u;
 
     /* 同步编码器健康状态 */
     s_st.enc_fault_mask = Encoder_GetFaultMask();
@@ -440,10 +461,25 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         float v_ref = s_v_ref_filt;
         float w_ref = s_w_ref_filt;
 
-        /* Simplified: keep only v/w -> wheel speed mapping. */
         s_outer_i_v = 0.0f;
         s_outer_i_w = 0.0f;
+
+#if CTRL_USE_YAW_HOLD
+        if (fabsf(v_ref) >= YAW_HOLD_V_MIN && fabsf(w_cmd) < YAW_HOLD_W_THRESH) {
+            float yaw_err;
+            if (!s_yaw_hold_active) {
+                s_yaw_hold_ref = s_st.yaw_est;
+                s_yaw_hold_active = 1u;
+            }
+            yaw_err = wrap_angle_deg(s_yaw_hold_ref - s_st.yaw_est);
+            w_ref += clampf(YAW_HOLD_KP * (yaw_err / 180.0f), -YAW_HOLD_W_LIM, YAW_HOLD_W_LIM);
+        } else {
+            s_yaw_hold_ref = s_st.yaw_est;
+            s_yaw_hold_active = 0u;
+        }
+#else
         s_yaw_hold_active = 0u;
+#endif
 
         ref_cps[ENC_L1] = clampf(v_ref - w_ref, -1.0f, 1.0f) * MAX_CPS;
         ref_cps[ENC_L2] = ref_cps[ENC_L1];

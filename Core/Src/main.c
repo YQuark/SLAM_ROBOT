@@ -936,9 +936,10 @@ int main(void)
       /* VOFA+ FireWater: pure numeric CSV for plotting */
       /* 新增: roll_x100, pitch_x100, yaw_x100, enc_fault_mask */
       n = snprintf(buf, sizeof(buf),
-                   "%lu,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%u,%u,%u\r\n",
+                   "%lu,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%u,%u,%u\r\n",
                    (unsigned long)now,
                    (unsigned int)state->imu_valid,
+                   (unsigned int)state->imu_accel_valid,
                    (long)ax_mg, (long)ay_mg, (long)az_mg,
                    (long)gx_cdps, (long)gy_cdps, (long)gz_cdps,
                    (long)enc0, (long)enc1, (long)enc2, (long)enc3,

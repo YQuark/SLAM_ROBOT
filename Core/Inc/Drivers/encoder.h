@@ -17,13 +17,13 @@ extern "C" {
 #define ENC_L1_POLARITY (+1)
 #endif
 #ifndef ENC_L2_POLARITY
-#define ENC_L2_POLARITY (-1)
+#define ENC_L2_POLARITY (+1)
 #endif
 #ifndef ENC_R1_POLARITY
 #define ENC_R1_POLARITY (-1)
 #endif
 #ifndef ENC_R2_POLARITY
-#define ENC_R2_POLARITY (+1)
+#define ENC_R2_POLARITY (-1)
 #endif
 
 /* ==================== 断线检测参数 ==================== */

@@ -65,18 +65,18 @@
 /* ======== 四轮 PI 参数（初值，实车调） ======== */
 #define PI_INT_LIM              1.0f
 
-#define KP_L1                0.00025f
-#define KI_L1                0.00040f
-#define KP_L2                0.00025f
-#define KI_L2                0.00040f
-#define KP_R1                0.00025f
-#define KI_R1                0.00040f
-#define KP_R2                0.00025f
-#define KI_R2                0.00040f
+#define KP_L1                0.00028f
+#define KI_L1                0.00000f
+#define KP_L2                0.00029f
+#define KI_L2                0.00000f
+#define KP_R1                0.00029f
+#define KI_R1                0.00000f
+#define KP_R2                0.00029f
+#define KI_R2                0.00000f
 
 /* ======== Control optimization toggles ======== */
 #define CTRL_USE_DUAL_LOOP           0u
-#define CTRL_USE_YAW_HOLD            0u
+#define CTRL_USE_YAW_HOLD            1u
 #define CTRL_USE_AW                  1u
 #define CTRL_USE_STATIC_FF           1u
 
@@ -100,6 +100,8 @@
 #define IMU_W_DPS_SCALE         180.0f      /* dps that maps to w=1.0 */
 #define YAW_HOLD_KP              1.10f
 #define YAW_HOLD_W_THRESH        0.06f
+#define YAW_HOLD_V_MIN           0.08f
+#define YAW_HOLD_W_LIM           0.18f
 
 /* ======== Wheel loop anti-windup / low-speed ======== */
 #define PI_AW_KAW                0.25f
