@@ -31,6 +31,11 @@ static PI_Controller_t s_pi[4];
 static uint32_t s_ps2_ts = 0;
 static uint32_t s_esp_ts = 0;
 static uint32_t s_pc_ts = 0;
+static uint32_t s_esp_link_ts = 0;
+static uint32_t s_pc_link_ts = 0;
+static uint32_t s_esp_control_ts = 0;
+static uint32_t s_pc_control_ts = 0;
+static uint32_t s_last_telemetry_ms = 0u;
 static float s_ps2_v = 0.0f, s_ps2_w = 0.0f;
 static float s_esp_v = 0.0f, s_esp_w = 0.0f;
 static float s_pc_v = 0.0f, s_pc_w = 0.0f;
@@ -51,6 +56,8 @@ static float s_outer_i_v = 0.0f;
 static float s_outer_i_w = 0.0f;
 static float s_last_u[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 static uint16_t s_start_assist_ticks[4] = {0u, 0u, 0u, 0u};
+static uint8_t s_start_assist_armed[4] = {1u, 1u, 1u, 1u};
+static uint8_t s_safety_stop_active = 0u;
 
 /* ---------------- 辅助函数 ---------------- */
 static inline float clampf(float x, float lo, float hi)
@@ -92,6 +99,14 @@ static float slew_limit(float current, float target, float rate_per_s, float dt)
     return current + delta;
 }
 
+static inline float apply_cmd_deadzone(float v)
+{
+    if (fabsf(v) < CMD_INPUT_DEADZONE) {
+        return 0.0f;
+    }
+    return clampf(v, -1.0f, 1.0f);
+}
+
 static float PI_Update_AW(PI_Controller_t *pi, float err, float ff, float dt)
 {
     float u_unsat = pi->kp * err + pi->integral + ff;
@@ -129,6 +144,7 @@ static void reset_runtime_states(void)
     for (int i = 0; i < 4; ++i) {
         s_last_u[i] = 0.0f;
         s_start_assist_ticks[i] = 0u;
+        s_start_assist_armed[i] = 1u;
     }
 }
 
@@ -142,10 +158,16 @@ void RobotControl_Init(void)
     s_mode_switch_ts = HAL_GetTick();
     s_prev_src = CMD_SRC_NONE;
     motor_set_duty_limit(0.8f);
+    s_safety_stop_active = 0u;
 
     s_ps2_ts = 0;
     s_esp_ts = 0;
     s_pc_ts = 0;
+    s_esp_link_ts = 0;
+    s_pc_link_ts = 0;
+    s_esp_control_ts = 0u;
+    s_pc_control_ts = 0u;
+    s_last_telemetry_ms = 0u;
     s_ps2_active = 0u;
     s_open_ts = 0;
     s_st.imu_enabled = USE_IMU_DEFAULT;
@@ -153,6 +175,10 @@ void RobotControl_Init(void)
 
 void RobotControl_SetMode(ControlMode_t mode)
 {
+    if ((mode != MODE_IDLE) && (Encoder_GetFaultMask() != 0u)) {
+        s_safety_stop_active = 1u;
+        return;
+    }
     if (mode == s_mode) {
         return;
     }
@@ -160,6 +186,9 @@ void RobotControl_SetMode(ControlMode_t mode)
     s_mode_switch_ts = HAL_GetTick();
     reset_pi();
     reset_runtime_states();
+    if (mode == MODE_IDLE) {
+        s_safety_stop_active = 0u;
+    }
     motor_coast_all();
 }
 
@@ -205,16 +234,20 @@ void RobotControl_SetCmd_PS2(float v, float w, uint32_t now_ms)
 
 void RobotControl_SetCmd_ESP(float v, float w, uint32_t now_ms)
 {
-    s_esp_v = clampf(v, -1.0f, 1.0f);
-    s_esp_w = clampf(w, -1.0f, 1.0f);
+    s_esp_v = apply_cmd_deadzone(v);
+    s_esp_w = apply_cmd_deadzone(w);
     s_esp_ts = now_ms;
+    s_esp_control_ts = now_ms;
+    s_esp_link_ts = now_ms;
 }
 
 void RobotControl_SetCmd_PC(float v, float w, uint32_t now_ms)
 {
-    s_pc_v = clampf(v, -1.0f, 1.0f);
-    s_pc_w = clampf(w, -1.0f, 1.0f);
+    s_pc_v = apply_cmd_deadzone(v);
+    s_pc_w = apply_cmd_deadzone(w);
     s_pc_ts = now_ms;
+    s_pc_control_ts = now_ms;
+    s_pc_link_ts = now_ms;
 }
 
 void RobotControl_UpdateIMU(const MPU6050_Data_t *imu, uint8_t ok, uint32_t now_ms)
@@ -272,6 +305,78 @@ void RobotControl_SetIMUEnabled(uint8_t en)
     }
 }
 
+void RobotControl_NotifyLinkActivity(cmd_source_t src, uint32_t now_ms)
+{
+    if (src == CMD_SRC_PC) {
+        s_pc_link_ts = now_ms;
+    } else if (src == CMD_SRC_ESP) {
+        s_esp_link_ts = now_ms;
+    }
+}
+
+void RobotControl_NotifyLinkActivityEx(cmd_source_t src, link_activity_t activity, uint32_t now_ms)
+{
+    RobotControl_NotifyLinkActivity(src, now_ms);
+    if (activity != LINK_ACTIVITY_CONTROL) {
+        return;
+    }
+    if (src == CMD_SRC_PC) {
+        s_pc_control_ts = now_ms;
+    } else if (src == CMD_SRC_ESP) {
+        s_esp_control_ts = now_ms;
+    }
+}
+
+void RobotControl_ReportControlBatch(uint8_t pending_depth)
+{
+    if (pending_depth == 0u) {
+        return;
+    }
+    s_st.ctrl_cycle_count += pending_depth;
+    if (pending_depth > 1u) {
+        s_st.ctrl_backlog_events++;
+    }
+    if (pending_depth > s_st.ctrl_backlog_max) {
+        s_st.ctrl_backlog_max = pending_depth;
+    }
+}
+
+void RobotControl_ReportTelemetry(uint32_t now_ms)
+{
+    s_last_telemetry_ms = now_ms;
+}
+
+void RobotControl_ReportUartError(cmd_source_t src)
+{
+    if (src == CMD_SRC_PC) {
+        if (s_st.pc_uart_err_count < 0xFFFFu) {
+            s_st.pc_uart_err_count++;
+        }
+    } else if (src == CMD_SRC_ESP) {
+        if (s_st.esp_uart_err_count < 0xFFFFu) {
+            s_st.esp_uart_err_count++;
+        }
+    }
+}
+
+void RobotControl_ReportUartRecovery(cmd_source_t src)
+{
+    if (src == CMD_SRC_PC) {
+        if (s_st.pc_uart_recover_count < 0xFFFFu) {
+            s_st.pc_uart_recover_count++;
+        }
+    } else if (src == CMD_SRC_ESP) {
+        if (s_st.esp_uart_recover_count < 0xFFFFu) {
+            s_st.esp_uart_recover_count++;
+        }
+    }
+}
+
+uint8_t RobotControl_IsSafetyStopActive(void)
+{
+    return s_safety_stop_active;
+}
+
 static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
 {
     *v = 0.0f;
@@ -282,20 +387,27 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
                      ((now_ms - s_ps2_ts) <= CMD_TIMEOUT_MS);
     uint8_t pc_ok = (s_pc_ts != 0u) && ((now_ms - s_pc_ts) <= CMD_TIMEOUT_MS);
     uint8_t esp_ok = (s_esp_ts != 0u) && ((now_ms - s_esp_ts) <= CMD_TIMEOUT_MS);
+    uint8_t pc_control_ok = (s_pc_control_ts != 0u) && ((now_ms - s_pc_control_ts) <= LINK_ACTIVE_TIMEOUT_MS);
     uint32_t best_ts = 0u;
 
-    /* Active PS2 command has highest priority to avoid being masked by link keepalive zeros. */
+    /* Only explicit PC control activity may seize ownership. Query traffic must not. */
+    if (pc_control_ok) {
+        if (pc_ok) {
+            *v = s_pc_v;
+            *w = s_pc_w;
+        } else {
+            *v = 0.0f;
+            *w = 0.0f;
+        }
+        *src = CMD_SRC_PC;
+        return;
+    }
+
+    /* Without an active PC link, prefer the freshest active source. */
     if (ps2_ok && (fabsf(s_ps2_v) > 0.03f || fabsf(s_ps2_w) > 0.03f)) {
         *v = s_ps2_v;
         *w = s_ps2_w;
         *src = CMD_SRC_PS2;
-        return;
-    }
-
-    if (pc_ok) {
-        *v = s_pc_v;
-        *w = s_pc_w;
-        *src = CMD_SRC_PC;
         return;
     }
 
@@ -306,16 +418,16 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
         *src = CMD_SRC_PS2;
         best_ts = s_ps2_ts;
     }
-    if (pc_ok && s_pc_ts >= best_ts) {
-        *v = s_pc_v;
-        *w = s_pc_w;
-        *src = CMD_SRC_PC;
-        best_ts = s_pc_ts;
-    }
     if (esp_ok && s_esp_ts >= best_ts) {
         *v = s_esp_v;
         *w = s_esp_w;
         *src = CMD_SRC_ESP;
+        best_ts = s_esp_ts;
+    }
+    if (pc_ok && s_pc_ts >= best_ts) {
+        *v = s_pc_v;
+        *w = s_pc_w;
+        *src = CMD_SRC_PC;
     }
 }
 
@@ -356,6 +468,20 @@ static void stop_outputs_and_observe(void)
     }
 }
 
+static void safety_brake_and_observe(void)
+{
+    motor_brake_all();
+    for (int i = 0; i < 4; ++i) {
+        s_st.ref_cps[i] = 0.0f;
+        s_st.meas_cps[i] = g_encoders[i].vel_cps;
+        s_st.u_out[i] = 0.0f;
+        s_last_u[i] = 0.0f;
+        s_start_assist_ticks[i] = 0u;
+        s_start_assist_armed[i] = 1u;
+        Encoder_SetMotorOutput((encoder_id_t)i, 0.0f);
+    }
+}
+
 void RobotControl_Update(float dt, uint32_t now_ms)
 {
     float v_cmd = 0.0f;
@@ -381,12 +507,30 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     if (src != s_prev_src) {
         s_prev_src = src;
         s_src_switch_ts = now_ms;
+        s_st.src_switch_count++;
     }
     s_st.src_transition_active = 0u;
 
     s_st.v_cmd = v_cmd;
     s_st.w_cmd = w_cmd;
     s_st.src = src;
+    s_st.pc_link_online =
+        (s_pc_link_ts != 0u) && ((now_ms - s_pc_link_ts) <= LINK_ACTIVE_TIMEOUT_MS);
+    s_st.pc_control_online =
+        (s_pc_control_ts != 0u) && ((now_ms - s_pc_control_ts) <= LINK_ACTIVE_TIMEOUT_MS);
+    s_st.esp_link_online =
+        (s_esp_link_ts != 0u) && ((now_ms - s_esp_link_ts) <= LINK_ACTIVE_TIMEOUT_MS);
+    s_st.esp_control_online =
+        (s_esp_control_ts != 0u) && ((now_ms - s_esp_control_ts) <= LINK_ACTIVE_TIMEOUT_MS);
+    if (s_last_telemetry_ms == 0u) {
+        s_st.telemetry_age_ms = 0u;
+    } else {
+        uint32_t telemetry_age = now_ms - s_last_telemetry_ms;
+        if (telemetry_age > 0xFFFFu) {
+            telemetry_age = 0xFFFFu;
+        }
+        s_st.telemetry_age_ms = (uint16_t)telemetry_age;
+    }
 
     update_observer(dt);
 
@@ -401,6 +545,13 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 
     /* 同步编码器健康状态 */
     s_st.enc_fault_mask = Encoder_GetFaultMask();
+    if (s_st.enc_fault_mask != 0u) {
+        s_safety_stop_active = 1u;
+        s_mode = MODE_IDLE;
+        safety_brake_and_observe();
+        return;
+    }
+    s_safety_stop_active = 0u;
 
     s_st.mode_transition_active = 0u;
 
@@ -501,6 +652,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
             s_pi[i].integral = 0.0f;
             s_last_u[i] = 0.0f;
             s_start_assist_ticks[i] = 0u;
+            s_start_assist_armed[i] = 1u;
             u = 0.0f;
         } else if (fabsf(meas) > (1.5f * MAX_CPS)) {
             /* 异常速度时强制清零 */
@@ -508,6 +660,7 @@ void RobotControl_Update(float dt, uint32_t now_ms)
             u = 0.0f;
             s_last_u[i] = 0.0f;
             s_start_assist_ticks[i] = 0u;
+            s_start_assist_armed[i] = 1u;
         } else {
             if (CTRL_USE_STATIC_FF && fabsf(ref) > 1.0f) {
                 ff = U_STATIC_FF * signf_nonzero(ref);
@@ -517,9 +670,16 @@ void RobotControl_Update(float dt, uint32_t now_ms)
             s_last_u[i] = u;
 
 #if START_ASSIST_ENABLE
-            if (fabsf(ref) > (START_ASSIST_REF_RATIO * MAX_CPS) &&
+            if (fabsf(ref) < (0.5f * START_ASSIST_REF_RATIO * MAX_CPS)) {
+                s_start_assist_armed[i] = 1u;
+            } else if (fabsf(meas) > (START_ASSIST_REARM_RATIO * MAX_CPS)) {
+                s_start_assist_armed[i] = 1u;
+            }
+            if (s_start_assist_armed[i] &&
+                fabsf(ref) > (START_ASSIST_REF_RATIO * MAX_CPS) &&
                 fabsf(meas) < (START_ASSIST_MEAS_RATIO * MAX_CPS)) {
                 s_start_assist_ticks[i] = assist_hold_ticks;
+                s_start_assist_armed[i] = 0u;
             }
             if (s_start_assist_ticks[i] > 0u) {
                 float assist_u = START_ASSIST_MIN_U * signf_nonzero(ref);

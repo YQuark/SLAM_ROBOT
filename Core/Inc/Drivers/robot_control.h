@@ -19,11 +19,20 @@ extern "C" {
         CMD_SRC_PC   = 3,
     } cmd_source_t;
 
+    typedef enum {
+        LINK_ACTIVITY_QUERY = 0,
+        LINK_ACTIVITY_CONTROL = 1,
+    } link_activity_t;
+
     /* 运行时控制状态（用于调参观测/上位机） */
     typedef struct {
         float v_cmd;          /* [-1,1] */
         float w_cmd;          /* [-1,1] */
         cmd_source_t src;
+        uint8_t pc_link_online;
+        uint8_t pc_control_online;
+        uint8_t esp_link_online;
+        uint8_t esp_control_online;
 
         /* IMU 状态 */
         uint8_t imu_enabled;      /* 是否参与控制 */
@@ -46,6 +55,15 @@ extern "C" {
         float v_est;
         float w_est;
         float yaw_est;
+        uint32_t src_switch_count;
+        uint32_t ctrl_cycle_count;
+        uint16_t ctrl_backlog_events;
+        uint8_t ctrl_backlog_max;
+        uint16_t telemetry_age_ms;
+        uint16_t pc_uart_err_count;
+        uint16_t esp_uart_err_count;
+        uint16_t pc_uart_recover_count;
+        uint16_t esp_uart_recover_count;
         uint8_t mode_transition_active;
         uint8_t src_transition_active;
 
@@ -83,6 +101,19 @@ extern "C" {
 
     /* 切换 IMU 参与控制（用于调参时一键禁用） */
     void RobotControl_SetIMUEnabled(uint8_t en);
+
+    /* 记录链路存在，用于仲裁上位机优先级 */
+    void RobotControl_NotifyLinkActivity(cmd_source_t src, uint32_t now_ms);
+    void RobotControl_NotifyLinkActivityEx(cmd_source_t src, link_activity_t activity, uint32_t now_ms);
+
+    /* 关键链路观测 */
+    void RobotControl_ReportControlBatch(uint8_t pending_depth);
+    void RobotControl_ReportTelemetry(uint32_t now_ms);
+    void RobotControl_ReportUartError(cmd_source_t src);
+    void RobotControl_ReportUartRecovery(cmd_source_t src);
+
+    /* 当前是否因安全故障而强制停车 */
+    uint8_t RobotControl_IsSafetyStopActive(void);
 
     /* 速度闭环更新：dt 秒（建议固定 0.02s），内部调用 motor_set 输出 */
     void RobotControl_Update(float dt, uint32_t now_ms);

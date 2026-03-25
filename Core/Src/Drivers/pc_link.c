@@ -1,5 +1,6 @@
 #include "pc_link.h"
 #include "link_proto.h"
+#include "robot_config.h"
 #include "robot_control.h"
 #include "encoder.h"
 #include "motor.h"
@@ -11,6 +12,7 @@
 #include <string.h>
 
 #define PC_ASCII_LINE_MAX 96u
+#define PC_RX_FIFO_SIZE 256u
 #define PC_STREAM_HZ_DEFAULT 20u
 #define PC_STREAM_HZ_MIN 1u
 #define PC_STREAM_HZ_MAX 50u
@@ -27,6 +29,58 @@ static uint32_t s_stream_last_ms = 0u;
 static uint8_t s_motor_override = 0u;
 static float s_motor_left = 0.0f;
 static float s_motor_right = 0.0f;
+static uint32_t s_motor_override_ts = 0u;
+static uint8_t s_rx_fifo[PC_RX_FIFO_SIZE];
+static volatile uint16_t s_rx_fifo_head = 0u;
+static volatile uint16_t s_rx_fifo_tail = 0u;
+static volatile uint8_t s_rx_overflow = 0u;
+static uint8_t s_uart_err_burst = 0u;
+static uint32_t s_uart_err_window_ts = 0u;
+static uint32_t s_last_recovery_ms = 0u;
+static volatile uint8_t s_recover_pending = 0u;
+
+static uint8_t pc_rx_fifo_push(uint8_t ch)
+{
+    uint16_t next = (uint16_t)((s_rx_fifo_head + 1u) % PC_RX_FIFO_SIZE);
+    if (next == s_rx_fifo_tail) {
+        s_rx_overflow = 1u;
+        return 0u;
+    }
+    s_rx_fifo[s_rx_fifo_head] = ch;
+    s_rx_fifo_head = next;
+    return 1u;
+}
+
+static uint8_t pc_rx_fifo_pop(uint8_t *out)
+{
+    uint8_t has_data = 0u;
+
+    __disable_irq();
+    if (s_rx_fifo_tail != s_rx_fifo_head) {
+        *out = s_rx_fifo[s_rx_fifo_tail];
+        s_rx_fifo_tail = (uint16_t)((s_rx_fifo_tail + 1u) % PC_RX_FIFO_SIZE);
+        has_data = 1u;
+    }
+    __enable_irq();
+
+    return has_data;
+}
+
+static void pc_uart_restart_rx(void)
+{
+    if (!s_huart) return;
+    (void)HAL_UART_AbortReceive(s_huart);
+    (void)HAL_UART_Receive_IT(s_huart, &s_rx_ch, 1);
+}
+
+static void pc_uart_schedule_recovery(uint32_t now_ms)
+{
+    if ((s_last_recovery_ms != 0u) &&
+        ((now_ms - s_last_recovery_ms) < UART_RECOVERY_COOLDOWN_MS)) {
+        return;
+    }
+    s_recover_pending = 1u;
+}
 
 static int32_t scaled_i32(float value, float scale)
 {
@@ -120,6 +174,16 @@ static uint8_t parse_mode_token(const char *tok, ControlMode_t *mode_out)
         return 1u;
     }
     return 0u;
+}
+
+static void pc_mark_query_activity(void)
+{
+    RobotControl_NotifyLinkActivityEx(CMD_SRC_PC, LINK_ACTIVITY_QUERY, HAL_GetTick());
+}
+
+static void pc_mark_control_activity(void)
+{
+    RobotControl_NotifyLinkActivityEx(CMD_SRC_PC, LINK_ACTIVITY_CONTROL, HAL_GetTick());
 }
 
 static uint8_t parse_bool_token(const char *tok, uint8_t *out)
@@ -291,25 +355,27 @@ static void PC_Link_HandleAsciiLine(char *line,
     line = trim_left(line);
     trim_right(line);
     if (line[0] == '\0') return;
-
     cmd = strtok(line, " \t");
     arg1 = strtok(NULL, " \t");
     arg2 = strtok(NULL, " \t");
     if (!cmd) return;
 
     if (str_ieq(cmd, "PING")) {
+        pc_mark_query_activity();
         pc_uart_send("OK PONG\r\n");
         return;
     }
 
     if (str_ieq(cmd, "HELP")) {
+        pc_mark_query_activity();
         pc_uart_send("OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, MOTOR <l> <r>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>\r\n");
         return;
     }
 
     if (str_ieq(cmd, "STATUS")) {
+        pc_mark_query_activity();
         st = RobotControl_GetState();
-        pc_uart_sendf("OK STATUS mode=%u src=%u v_cmd_x1000=%ld w_cmd_x1000=%ld v_est_x1000=%ld w_est_x1000=%ld yaw_x100=%ld vbat_mv=%ld imu_en=%u imu_ok=%u imu_acc_ok=%u gz_cdps=%ld enc_fault=0x%02X motor_ovr=%u\r\n",
+        pc_uart_sendf("OK STATUS mode=%u src=%u v_cmd_x1000=%ld w_cmd_x1000=%ld v_est_x1000=%ld w_est_x1000=%ld yaw_x100=%ld vbat_mv=%ld imu_en=%u imu_ok=%u imu_acc_ok=%u gz_cdps=%ld enc_fault=0x%02X motor_ovr=%u pc_link=%u pc_ctrl=%u ctrl_backlog=%u ctrl_max_pending=%u tel_age_ms=%u pc_uart_err=%u pc_uart_rec=%u esp_uart_err=%u esp_uart_rec=%u\r\n",
                       (unsigned int)RobotControl_GetMode(),
                       (unsigned int)st->src,
                       (long)scaled_i32(st->v_cmd, 1000.0f),
@@ -324,11 +390,21 @@ static void PC_Link_HandleAsciiLine(char *line,
                       (long)((imu && Attitude_GetData()->valid) ?
                           scaled_i32(imu->gz_dps - Attitude_GetData()->gyro_bias_z, 100.0f) : 0),
                       (unsigned int)st->enc_fault_mask,
-                      (unsigned int)s_motor_override);
+                      (unsigned int)s_motor_override,
+                      (unsigned int)st->pc_link_online,
+                      (unsigned int)st->pc_control_online,
+                      (unsigned int)st->ctrl_backlog_events,
+                      (unsigned int)st->ctrl_backlog_max,
+                      (unsigned int)st->telemetry_age_ms,
+                      (unsigned int)st->pc_uart_err_count,
+                      (unsigned int)st->pc_uart_recover_count,
+                      (unsigned int)st->esp_uart_err_count,
+                      (unsigned int)st->esp_uart_recover_count);
         return;
     }
 
     if (str_ieq(cmd, "DEBUG")) {
+        pc_mark_query_activity();
         st = RobotControl_GetState();
         motor_get_debug(ccr, dir);
         pc_uart_sendf(
@@ -354,6 +430,7 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "MODE")) {
+        pc_mark_query_activity();
         if (!arg1) {
             pc_uart_sendf("OK MODE %u\r\n", (unsigned int)RobotControl_GetMode());
             return;
@@ -368,6 +445,7 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "IMU")) {
+        pc_mark_query_activity();
         st = RobotControl_GetState();
         if (!arg1) {
             pc_uart_sendf("OK IMU %u\r\n", (unsigned int)st->imu_enabled);
@@ -383,9 +461,11 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "STOP")) {
+        pc_mark_control_activity();
         s_motor_override = 0u;
         s_motor_left = 0.0f;
         s_motor_right = 0.0f;
+        s_motor_override_ts = 0u;
         motor_coast_all();
         RobotControl_SetCmd_PC(0.0f, 0.0f, HAL_GetTick());
         pc_uart_send("OK STOP\r\n");
@@ -393,6 +473,7 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "DRIVE") || str_ieq(cmd, "CTRL")) {
+        pc_mark_control_activity();
         if (!arg1 || !arg2) {
             pc_uart_send("ERR DRIVE expect: DRIVE <v> <w>\r\n");
             return;
@@ -408,6 +489,7 @@ static void PC_Link_HandleAsciiLine(char *line,
         s_motor_override = 0u;
         s_motor_left = 0.0f;
         s_motor_right = 0.0f;
+        s_motor_override_ts = 0u;
         RobotControl_SetCmd_PC(v, w, HAL_GetTick());
         pc_uart_sendf("OK DRIVE v_x1000=%ld w_x1000=%ld\r\n",
                       (long)scaled_i32(v, 1000.0f),
@@ -416,6 +498,7 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "MOTOR")) {
+        pc_mark_control_activity();
         if (!arg1 || !arg2) {
             pc_uart_send("ERR MOTOR expect: MOTOR <left> <right>\r\n");
             return;
@@ -431,6 +514,7 @@ static void PC_Link_HandleAsciiLine(char *line,
         s_motor_override = 1u;
         s_motor_left = v;
         s_motor_right = w;
+        s_motor_override_ts = HAL_GetTick();
         motor_set(MOTOR_L1, v);
         motor_set(MOTOR_L2, v);
         motor_set(MOTOR_R1, w);
@@ -446,6 +530,7 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "RATE")) {
+        pc_mark_query_activity();
         if (!arg1 || !parse_u16_token(arg1, &hz)) {
             pc_uart_sendf("ERR RATE expect %u..%u\r\n", (unsigned int)PC_STREAM_HZ_MIN, (unsigned int)PC_STREAM_HZ_MAX);
             return;
@@ -460,6 +545,7 @@ static void PC_Link_HandleAsciiLine(char *line,
     }
 
     if (str_ieq(cmd, "STREAM")) {
+        pc_mark_query_activity();
         if (!arg1) {
             pc_uart_sendf("OK STREAM %s %uHz\r\n",
                           s_stream_enable ? "ON" : "OFF",
@@ -503,6 +589,13 @@ void PC_Link_Init(UART_HandleTypeDef *huart)
     s_stream_enable = 0u;
     s_stream_hz = PC_STREAM_HZ_DEFAULT;
     s_stream_last_ms = 0u;
+    s_rx_fifo_head = 0u;
+    s_rx_fifo_tail = 0u;
+    s_rx_overflow = 0u;
+    s_uart_err_burst = 0u;
+    s_uart_err_window_ts = 0u;
+    s_last_recovery_ms = 0u;
+    s_recover_pending = 0u;
     LinkProto_Init(LINK_ID_PC, huart);
     if (s_huart) {
         HAL_UART_Receive_IT(s_huart, &s_rx_ch, 1);
@@ -516,17 +609,18 @@ void PC_Link_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     if (!s_huart || huart != s_huart) return;
     ch = s_rx_ch;
 
-    /* Always feed binary parser first to preserve COBS/framed protocol compatibility. */
-    LinkProto_RxByte(LINK_ID_PC, ch);
-    /* ASCII command parsing is best-effort and must never block binary traffic. */
-    PC_Link_AsciiTapByte(ch);
+    (void)pc_rx_fifo_push(ch);
 
     HAL_UART_Receive_IT(s_huart, &s_rx_ch, 1);
 }
 
 void PC_Link_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+    uint32_t now_ms;
+
     if (!s_huart || huart != s_huart) return;
+
+    now_ms = HAL_GetTick();
 
     __HAL_UART_CLEAR_OREFLAG(huart);
     __HAL_UART_CLEAR_FEFLAG(huart);
@@ -535,7 +629,20 @@ void PC_Link_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
     ascii_accum_reset();
     LinkProto_UartError(LINK_ID_PC);
-    HAL_UART_Receive_IT(s_huart, &s_rx_ch, 1);
+    RobotControl_ReportUartError(CMD_SRC_PC);
+    if ((s_uart_err_window_ts == 0u) ||
+        ((now_ms - s_uart_err_window_ts) > UART_ERR_STORM_WINDOW_MS)) {
+        s_uart_err_window_ts = now_ms;
+        s_uart_err_burst = 1u;
+    } else if (s_uart_err_burst < 0xFFu) {
+        s_uart_err_burst++;
+    }
+
+    if (s_uart_err_burst >= UART_ERR_STORM_THRESHOLD) {
+        pc_uart_schedule_recovery(now_ms);
+    } else {
+        pc_uart_restart_rx();
+    }
 }
 
 void PC_Link_Poll(const BatteryStatus_t *batt,
@@ -543,6 +650,30 @@ void PC_Link_Poll(const BatteryStatus_t *batt,
 {
     char line[PC_ASCII_LINE_MAX];
     uint8_t has_line = 0u;
+    uint8_t ch = 0u;
+
+    if (s_rx_overflow) {
+        s_rx_overflow = 0u;
+        LinkProto_UartError(LINK_ID_PC);
+        RobotControl_ReportUartError(CMD_SRC_PC);
+        pc_uart_schedule_recovery(HAL_GetTick());
+    }
+
+    if (s_recover_pending && s_huart) {
+        s_recover_pending = 0u;
+        (void)HAL_UART_DeInit(s_huart);
+        (void)HAL_UART_Init(s_huart);
+        s_last_recovery_ms = HAL_GetTick();
+        s_uart_err_burst = 0u;
+        s_uart_err_window_ts = 0u;
+        RobotControl_ReportUartRecovery(CMD_SRC_PC);
+        pc_uart_restart_rx();
+    }
+
+    while (pc_rx_fifo_pop(&ch)) {
+        LinkProto_RxByte(LINK_ID_PC, ch);
+        PC_Link_AsciiTapByte(ch);
+    }
 
     __disable_irq();
     if (s_ascii_line_ready) {
@@ -557,7 +688,8 @@ void PC_Link_Poll(const BatteryStatus_t *batt,
         PC_Link_HandleAsciiLine(line, batt, imu);
     }
 
-    if (s_motor_override) {
+    if (s_motor_override && s_motor_override_ts != 0u &&
+        (HAL_GetTick() - s_motor_override_ts) <= LINK_ACTIVE_TIMEOUT_MS) {
         motor_set(MOTOR_L1, s_motor_left);
         motor_set(MOTOR_L2, s_motor_left);
         motor_set(MOTOR_R1, s_motor_right);
@@ -566,6 +698,12 @@ void PC_Link_Poll(const BatteryStatus_t *batt,
         Encoder_SetMotorOutput(ENC_L2, s_motor_left);
         Encoder_SetMotorOutput(ENC_R1, s_motor_right);
         Encoder_SetMotorOutput(ENC_R2, s_motor_right);
+    } else if (s_motor_override) {
+        s_motor_override = 0u;
+        s_motor_left = 0.0f;
+        s_motor_right = 0.0f;
+        s_motor_override_ts = 0u;
+        motor_coast_all();
     }
 
     PC_Link_StreamTick(batt, imu);

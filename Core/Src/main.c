@@ -68,6 +68,8 @@ PS2_TypeDef ps2;
 static uint8_t s_uv_limit_active = 0;
 static uint8_t s_uv_cutoff_active = 0;
 static float s_nominal_duty_limit = 0.80f;
+static volatile uint8_t s_ctrl_pending = 0u;
+static volatile uint8_t s_ctrl_tick_div = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -79,6 +81,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 static void USART_SendString(const char *s);
+static uint8_t System_IsCriticalPathBusy(void);
 
 static void Safety_WatchdogInit(void)
 {
@@ -164,6 +167,11 @@ static void MPU6050_PrintStatus(void)
 static void USART_SendString(const char *s)
 {
   HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 100);
+}
+
+static uint8_t System_IsCriticalPathBusy(void)
+{
+  return (s_ctrl_pending > 0u) ? 1u : 0u;
 }
 
 static const char *IMU_CalibFailReasonToString(IMU_CalibFailReason_t reason)
@@ -737,7 +745,7 @@ int main(void)
 
   RobotControl_Init();
   s_nominal_duty_limit = motor_get_duty_limit();
-  RobotControl_SetMode(MODE_OPEN_LOOP);  // Start in open-loop for drivetrain verification.
+  RobotControl_SetMode(MODE_CLOSED_LOOP);
   RobotControl_SetIMUEnabled(imu_ready ? 1 : 0);
 
   /* PS2 鍒濆鍖栵紙鍦ㄦ墍鏈夌紪鐮佸櫒鍜岀數鏈哄垵濮嬪寲瀹屾垚鍚庯級 */
@@ -855,38 +863,56 @@ int main(void)
       Safety_BatteryProtect();
     }
 
-    if (now - last_oled >= OLED_INTERVAL_MS) {
+    if ((now - last_oled >= OLED_INTERVAL_MS) && !System_IsCriticalPathBusy()) {
       last_oled = now;
       System_ShowStatus();
     }
 
     /* ---------------- 缂栫爜锟?+ 鎺у埗闂幆 ---------------- */
-    if (now - last_ctrl >= CTRL_PERIOD_MS) {
-      float dt = (float)(now - last_ctrl) / 1000.0f;
-      last_ctrl = now;
-      if (s_uv_cutoff_active && RobotControl_GetMode() != MODE_IDLE) {
-        RobotControl_SetMode(MODE_IDLE);
-      }
-      Encoder_UpdateAll(dt);
-      RobotControl_Update(dt, now);
+    if (s_ctrl_pending > 0u) {
+      uint8_t pending;
+      __disable_irq();
+      pending = s_ctrl_pending;
+      s_ctrl_pending = 0u;
+      __enable_irq();
+      RobotControl_ReportControlBatch(pending);
 
-      /* 璋冭瘯杈撳嚭锛氭樉绀哄綋鍓嶆帶鍒剁姸鎬侊紙鎵€锟?涓疆瀛愶級 */
-      if (CTRL_DEBUG_ENABLE && (now - last_ctrl_dbg >= CTRL_DEBUG_INTERVAL_MS)) {
-        last_ctrl_dbg = now;
-        const RobotControlState_t *state = RobotControl_GetState();
-        uint16_t ccr[4];
-        uint8_t dir[4];
-        char dbg[320];
-        motor_get_debug(ccr, dir);
-        int n = snprintf(dbg, sizeof(dbg),
-                         "Mode=%d Src=%d v=%.2f w=%.2f | Enc L1:%.0f L2:%.0f R1:%.0f R2:%.0f | Out L1:%.2f L2:%.2f R1:%.2f R2:%.2f | CCR %u,%u,%u,%u | DIR %u,%u,%u,%u\r\n",
-                         RobotControl_GetMode(), state->src,
-                         state->v_cmd, state->w_cmd,
-                         state->meas_cps[0], state->meas_cps[1], state->meas_cps[2], state->meas_cps[3],
-                         state->u_out[0], state->u_out[1], state->u_out[2], state->u_out[3],
-                         ccr[0], ccr[1], ccr[2], ccr[3],
-                         dir[0], dir[1], dir[2], dir[3]);
-        HAL_UART_Transmit(&huart1, (uint8_t*)dbg, n, 100);
+      while (pending-- > 0u) {
+        now = HAL_GetTick();
+        float dt = (float)(now - last_ctrl) / 1000.0f;
+        last_ctrl = now;
+        if (dt <= 0.0f) {
+          dt = (float)CTRL_PERIOD_MS / 1000.0f;
+        }
+        if (dt > 0.050f) {
+          dt = (float)CTRL_PERIOD_MS / 1000.0f;
+        }
+        if (s_uv_cutoff_active && RobotControl_GetMode() != MODE_IDLE) {
+          RobotControl_SetMode(MODE_IDLE);
+        }
+        Encoder_UpdateAll(dt);
+        RobotControl_Update(dt, now);
+
+        /* 璋冭瘯杈撳嚭锛氭樉绀哄綋鍓嶆帶鍒剁姸鎬侊紙鎵€锟?涓疆瀛愶級 */
+        if (CTRL_DEBUG_ENABLE &&
+            (now - last_ctrl_dbg >= CTRL_DEBUG_INTERVAL_MS) &&
+            !System_IsCriticalPathBusy()) {
+          last_ctrl_dbg = now;
+          const RobotControlState_t *state = RobotControl_GetState();
+          uint16_t ccr[4];
+          uint8_t dir[4];
+          char dbg[320];
+          motor_get_debug(ccr, dir);
+          int n = snprintf(dbg, sizeof(dbg),
+                           "Mode=%d Src=%d v=%.2f w=%.2f | Enc L1:%.0f L2:%.0f R1:%.0f R2:%.0f | Out L1:%.2f L2:%.2f R1:%.2f R2:%.2f | CCR %u,%u,%u,%u | DIR %u,%u,%u,%u\r\n",
+                           RobotControl_GetMode(), state->src,
+                           state->v_cmd, state->w_cmd,
+                           state->meas_cps[0], state->meas_cps[1], state->meas_cps[2], state->meas_cps[3],
+                           state->u_out[0], state->u_out[1], state->u_out[2], state->u_out[3],
+                           ccr[0], ccr[1], ccr[2], ccr[3],
+                           dir[0], dir[1], dir[2], dir[3]);
+          HAL_UART_Transmit(&huart1, (uint8_t*)dbg, n, 100);
+        }
       }
     }
 
@@ -903,7 +929,9 @@ int main(void)
     }
 
 
-    if (TELEMETRY_ENABLE && (now - last_telemetry >= TELEMETRY_INTERVAL_MS)) {
+    if (TELEMETRY_ENABLE &&
+        (now - last_telemetry >= TELEMETRY_INTERVAL_MS) &&
+        !System_IsCriticalPathBusy()) {
       const RobotControlState_t *state = RobotControl_GetState();
       const Attitude_t *att = Attitude_GetData();
       char buf[400];
@@ -951,6 +979,7 @@ int main(void)
       if (n > 0) {
         uint16_t tx_len = (uint16_t)((n < (int)sizeof(buf)) ? n : ((int)sizeof(buf) - 1));
         HAL_UART_Transmit(&huart1, (uint8_t*)buf, tx_len, 100);
+        RobotControl_ReportTelemetry(now);
       }
     }
 
@@ -1039,6 +1068,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM6)
   {
     HAL_IncTick();
+    s_ctrl_tick_div = (uint8_t)(s_ctrl_tick_div + CTRL_ISR_TICK_MS);
+    if (s_ctrl_tick_div >= CTRL_PERIOD_MS) {
+      s_ctrl_tick_div = 0u;
+      if (s_ctrl_pending < 3u) {
+        s_ctrl_pending++;
+      }
+    }
   }
   /* USER CODE BEGIN Callback 1 */
 

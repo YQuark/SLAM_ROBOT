@@ -159,7 +159,7 @@ static HAL_StatusTypeDef link_send_encoded(link_ctx_t *ctx,
 {
     HAL_StatusTypeDef st;
     if (!ctx || !ctx->huart || !data || len == 0u) return HAL_ERROR;
-    st = HAL_UART_Transmit(ctx->huart, (uint8_t *)data, len, 100);
+    st = HAL_UART_Transmit(ctx->huart, (uint8_t *)data, len, LINK_UART_TX_TIMEOUT_MS);
     return st;
 }
 
@@ -391,6 +391,8 @@ static void handle_command(link_id_t link_id,
 
     switch (msg_type) {
     case LINK_MSG_CMD_PING:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 0u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -400,6 +402,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_GET_STATUS:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 0u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -408,6 +412,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_SET_DRIVE:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_CONTROL, now_ms);
         if (payload_len != 4u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -423,6 +429,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_SET_MODE:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 1u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -435,6 +443,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_SET_IMU:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 1u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -443,6 +453,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_GET_DIAG:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 0u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -451,6 +463,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_CLEAR_DIAG:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 0u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -459,6 +473,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_GET_FAULT_LOG:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len > 2u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
@@ -467,6 +483,8 @@ static void handle_command(link_id_t link_id,
         break;
 
     case LINK_MSG_CMD_CLEAR_FAULT_LOG:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_QUERY, now_ms);
         if (payload_len != 0u) {
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;

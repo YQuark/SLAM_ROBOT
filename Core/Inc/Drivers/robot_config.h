@@ -8,6 +8,7 @@
 
 /* ======== 周期调度（ms） ======== */
 #define CTRL_PERIOD_MS          20u   /* 速度闭环控制周期 */
+#define CTRL_ISR_TICK_MS         1u   /* TIM6/HAL tick derived scheduler quantum */
 #define PS2_SCAN_INTERVAL_MS    50u
 #define PS2_AXIS_DEADZONE      0.05f
 #define PS2_V_AXIS_INVERT         1u
@@ -66,13 +67,13 @@
 #define PI_INT_LIM              1.0f
 
 #define KP_L1                0.00028f
-#define KI_L1                0.00000f
+#define KI_L1                0.00003f
 #define KP_L2                0.00029f
-#define KI_L2                0.00000f
+#define KI_L2                0.00003f
 #define KP_R1                0.00029f
-#define KI_R1                0.00000f
+#define KI_R1                0.00003f
 #define KP_R2                0.00029f
-#define KI_R2                0.00000f
+#define KI_R2                0.00003f
 
 /* ======== Control optimization toggles ======== */
 #define CTRL_USE_DUAL_LOOP           0u
@@ -112,6 +113,7 @@
 #define START_ASSIST_ENABLE           1u
 #define START_ASSIST_REF_RATIO      0.08f   /* |ref| above this enters assist logic */
 #define START_ASSIST_MEAS_RATIO     0.02f   /* |meas| below this considered not moving */
+#define START_ASSIST_REARM_RATIO    0.05f   /* |meas| above this rearms assist after wheel starts moving */
 #define START_ASSIST_HOLD_MS          80u   /* how long to hold min duty once triggered */
 #define START_ASSIST_MIN_U          0.14f   /* minimum duty used to break static friction */
 
@@ -124,6 +126,8 @@
 /* ======== 指令仲裁 ======== */
 /* 指令超时：超过这个时间未更新则自动刹停（ms） */
 #define CMD_TIMEOUT_MS         300u
+#define LINK_ACTIVE_TIMEOUT_MS 1200u
+#define CMD_INPUT_DEADZONE    0.04f
 
 /* ======== 日志/观测 ======== */
 #define TELEMETRY_INTERVAL_MS  200u   /* 输出调参信息的最小间隔（ms） */
@@ -136,3 +140,7 @@
 #define ACK_TIMEOUT_MS            80u
 #define ACK_RETRY_MAX              2u
 #define FAULT_LOG_CAPACITY        64u
+#define LINK_UART_TX_TIMEOUT_MS    8u
+#define UART_ERR_STORM_THRESHOLD   4u
+#define UART_ERR_STORM_WINDOW_MS  120u
+#define UART_RECOVERY_COOLDOWN_MS 200u
