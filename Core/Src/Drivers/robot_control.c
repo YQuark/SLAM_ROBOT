@@ -148,6 +148,28 @@ static void reset_runtime_states(void)
     }
 }
 
+static void clear_motion_command_cache(void)
+{
+    s_ps2_v = 0.0f;
+    s_ps2_w = 0.0f;
+    s_ps2_ts = 0u;
+    s_ps2_active = 0u;
+
+    s_esp_v = 0.0f;
+    s_esp_w = 0.0f;
+    s_esp_ts = 0u;
+    s_esp_control_ts = 0u;
+
+    s_pc_v = 0.0f;
+    s_pc_w = 0.0f;
+    s_pc_ts = 0u;
+    s_pc_control_ts = 0u;
+
+    s_open_v = 0.0f;
+    s_open_w = 0.0f;
+    s_open_ts = 0u;
+}
+
 /* ---------------- 核心接口 ---------------- */
 void RobotControl_Init(void)
 {
@@ -168,8 +190,7 @@ void RobotControl_Init(void)
     s_esp_control_ts = 0u;
     s_pc_control_ts = 0u;
     s_last_telemetry_ms = 0u;
-    s_ps2_active = 0u;
-    s_open_ts = 0;
+    clear_motion_command_cache();
     s_st.imu_enabled = USE_IMU_DEFAULT;
 }
 
@@ -186,6 +207,8 @@ void RobotControl_SetMode(ControlMode_t mode)
     s_mode_switch_ts = HAL_GetTick();
     reset_pi();
     reset_runtime_states();
+    clear_motion_command_cache();
+    s_prev_src = CMD_SRC_NONE;
     if (mode == MODE_IDLE) {
         s_safety_stop_active = 0u;
     }

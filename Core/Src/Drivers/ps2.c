@@ -252,19 +252,14 @@ static uint8_t s_reconfig_count = 0u;
 
 uint8_t PS2_Scan(PS2_TypeDef *ps2)
 {
+    PS2_TypeDef sample;
+    uint8_t mode;
+
     if (ps2 == NULL) {
         return 0u;
     }
 
     PS2_Send(k_poll_frame, s_rx_buf, (uint8_t)sizeof(k_poll_frame));
-
-    ps2->mode = s_rx_buf[1];
-    ps2->btn1 = (uint8_t)~s_rx_buf[3];
-    ps2->btn2 = (uint8_t)~s_rx_buf[4];
-    ps2->RJoy_LR = s_rx_buf[5];
-    ps2->RJoy_UD = s_rx_buf[6];
-    ps2->LJoy_LR = s_rx_buf[7];
-    ps2->LJoy_UD = s_rx_buf[8];
 
     if (!PS2_HandshakeOK(s_rx_buf)) {
         if (s_reconfig_count < PS2_RETRY_LIMIT) {
@@ -274,15 +269,34 @@ uint8_t PS2_Scan(PS2_TypeDef *ps2)
         return 0u;
     }
 
-    if (!PS2_ModeValid(ps2->mode)) {
+    mode = s_rx_buf[1];
+    if (!PS2_ModeValid(mode)) {
         if (s_reconfig_count < PS2_RETRY_LIMIT) {
             PS2_ConfigAnalog();
             ++s_reconfig_count;
         }
-        return 1u;
+        return 0u;
     }
 
-    if (!PS2_ModeIsAnalog(ps2->mode)) {
+    sample.mode = mode;
+    sample.btn1 = (uint8_t)~s_rx_buf[3];
+    sample.btn2 = (uint8_t)~s_rx_buf[4];
+    if (PS2_ModeIsAnalog(sample.mode)) {
+        sample.RJoy_LR = s_rx_buf[5];
+        sample.RJoy_UD = s_rx_buf[6];
+        sample.LJoy_LR = s_rx_buf[7];
+        sample.LJoy_UD = s_rx_buf[8];
+    } else {
+        /* Digital mode has no trustworthy analog stick bytes; keep sticks centered. */
+        sample.RJoy_LR = 128u;
+        sample.RJoy_UD = 128u;
+        sample.LJoy_LR = 128u;
+        sample.LJoy_UD = 128u;
+    }
+
+    *ps2 = sample;
+
+    if (!PS2_ModeIsAnalog(sample.mode)) {
         if (s_reconfig_count < PS2_RETRY_LIMIT) {
             PS2_ConfigAnalog();
             ++s_reconfig_count;
