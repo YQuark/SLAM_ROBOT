@@ -237,6 +237,8 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     int16_t v_est_q15;
     int16_t w_est_q15;
     int16_t yaw_est_x100;
+    int16_t raw_left_q15;
+    int16_t raw_right_q15;
     uint16_t vb_mv = 0u;
     uint16_t pct_x10 = 0u;
     int16_t gz_x10 = 0;
@@ -279,6 +281,8 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
 
     v_q15 = clamp_i16_from_f(st->v_cmd * 32767.0f);
     w_q15 = clamp_i16_from_f(st->w_cmd * 32767.0f);
+    raw_left_q15 = clamp_i16_from_f(st->raw_left_cmd * 32767.0f);
+    raw_right_q15 = clamp_i16_from_f(st->raw_right_cmd * 32767.0f);
     v_est_q15 = clamp_i16_from_f(st->v_est * 32767.0f);
     w_est_q15 = clamp_i16_from_f(st->w_est * 32767.0f);
     yaw_est_x100 = clamp_i16_from_f(st->yaw_est * 100.0f);
@@ -308,6 +312,9 @@ static void append_status_payload(uint8_t *out, uint16_t *out_len,
     put_u16le(&out[p], (uint16_t)raw_ay_mg); p += 2;
     put_u16le(&out[p], (uint16_t)raw_az_mg); p += 2;
     out[p++] = st->imu_accel_valid;
+    out[p++] = st->cmd_semantics;
+    put_u16le(&out[p], (uint16_t)raw_left_q15); p += 2;
+    put_u16le(&out[p], (uint16_t)raw_right_q15); p += 2;
 
     *out_len = p;
 }
@@ -418,6 +425,10 @@ static void handle_command(link_id_t link_id,
             *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
             break;
         }
+        if (RobotControl_GetMode() != MODE_CLOSED_LOOP) {
+            *err_code = LINK_ERR_CTRL_MODE_REJECT;
+            break;
+        }
         {
             int16_t v_q15 = (int16_t)get_u16le(&payload[0]);
             int16_t w_q15 = (int16_t)get_u16le(&payload[2]);
@@ -450,6 +461,29 @@ static void handle_command(link_id_t link_id,
             break;
         }
         RobotControl_SetIMUEnabled(payload[0] ? 1u : 0u);
+        break;
+
+    case LINK_MSG_CMD_SET_RAW:
+        RobotControl_NotifyLinkActivityEx(link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                          LINK_ACTIVITY_CONTROL, now_ms);
+        if (payload_len != 4u) {
+            *err_code = LINK_ERR_PARSE_PAYLOAD_LEN;
+            break;
+        }
+        if (RobotControl_GetMode() != MODE_OPEN_LOOP) {
+            *err_code = LINK_ERR_CTRL_MODE_REJECT;
+            break;
+        }
+        {
+            int16_t left_q15 = (int16_t)get_u16le(&payload[0]);
+            int16_t right_q15 = (int16_t)get_u16le(&payload[2]);
+            float left = (float)left_q15 / 32767.0f;
+            float right = (float)right_q15 / 32767.0f;
+            RobotControl_SetOpenLoopCmd(left,
+                                        right,
+                                        link_id == LINK_ID_PC ? CMD_SRC_PC : CMD_SRC_ESP,
+                                        now_ms);
+        }
         break;
 
     case LINK_MSG_CMD_GET_DIAG:
@@ -696,6 +730,7 @@ void LinkProto_Poll(link_id_t link_id,
 
     if (ctx->last_req_valid &&
         msg_type != LINK_MSG_CMD_SET_DRIVE &&
+        msg_type != LINK_MSG_CMD_SET_RAW &&
         ctx->last_req_seq == seq &&
         ctx->last_req_type == msg_type) {
         LinkDiag_IncSeqDup(link_id);

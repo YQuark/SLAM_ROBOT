@@ -1,0 +1,22 @@
+{
+  "run_id": "20260331-control-architecture-hardening",
+  "goal": "fix the remaining control-architecture inconsistencies across chassis control, telemetry state, esp bridge, and protocol docs",
+  "deliverable": "code changes plus protocol documentation aligned to the hardened semantics",
+  "constraints": [
+    "do not push",
+    "preserve current binary/ascii protocol compatibility where possible",
+    "no board-side verification in this environment"
+  ],
+  "acceptance_criteria": [
+    "ps2 idle wake enters closed loop",
+    "pc seize window requires fresh pc command",
+    "status fields distinguish velocity vs raw semantics",
+    "esp mode changes wait for stm32 ack",
+    "docs reflect the new contract"
+  ],
+  "autonomy_mode": "interactive_governed",
+  "non_goals": [
+    "pid retuning",
+    "ros/slam integration changes"
+  ]
+}

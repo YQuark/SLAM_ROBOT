@@ -1,0 +1,7 @@
+{
+  "run_id": "20260331-control-architecture-risk-review",
+  "verification": [
+    "static code inspection completed",
+    "no build run because cmake is unavailable"
+  ]
+}

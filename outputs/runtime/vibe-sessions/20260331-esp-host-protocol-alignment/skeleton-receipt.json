@@ -1,0 +1,5 @@
+{
+  "run_id": "20260331-esp-host-protocol-alignment",
+  "task": "align esp01s control semantics with stm32 chassis modes and update host protocol docs",
+  "status": "completed"
+}

@@ -55,7 +55,7 @@ From `Core/Inc/Drivers/robot_config.h`:
 
 - `ESP_POLL_INTERVAL_MS = 10`
 - `PC_POLL_INTERVAL_MS = 10`
-- `IMU_READ_INTERVAL_MS = 100`
+- `IMU_READ_INTERVAL_MS = 20`
 - `TELEMETRY_INTERVAL_MS = 200`
 - `CMD_TIMEOUT_MS = 300`
 - `ACK_TIMEOUT_MS = 80`
@@ -128,6 +128,7 @@ Limits:
 - `0x10` `SET_DRIVE`
 - `0x11` `SET_MODE`
 - `0x12` `SET_IMU`
+- `0x13` `SET_RAW`
 - `0x30` `GET_DIAG`
 - `0x31` `CLEAR_DIAG`
 - `0x32` `GET_FAULT_LOG`
@@ -164,10 +165,13 @@ Limits:
   15. `yaw_est_x100_deg` `i16`
   16. `raw_accel_mg[3]` `i16 x 3`
   17. `imu_accel_valid` `u8`
+  18. `cmd_semantics` `u8`
+  19. `raw_left_q15` `i16`
+  20. `raw_right_q15` `i16`
 
 Notes:
 
-- `v_cmd_q15` and `w_cmd_q15` are normalized command values scaled by `32767`.
+- `v_cmd_q15` and `w_cmd_q15` are closed-loop velocity commands scaled by `32767`.
 - `v_est_q15` and `w_est_q15` are firmware-side estimated chassis linear/angular velocity, also scaled by `32767`.
 - `gz_dps_x10` is bias-corrected when IMU attitude is valid; otherwise it falls back to raw converted gyro rate.
 - `yaw_est_x100_deg` is the fused heading used by firmware and is the preferred host heading input.
@@ -176,6 +180,8 @@ Notes:
 - `raw_accel_mg[3]` is debug-only and must not be used for translational odometry yet.
 - `imu_valid` means yaw / gyro assistance is available.
 - `imu_accel_valid` means accelerometer data passed static calibration and current runtime gating.
+- `cmd_semantics`: `0=none`, `1=velocity`, `2=raw_left_right`
+- `raw_left_q15` / `raw_right_q15` are meaningful only when `cmd_semantics=2`
 
 ### `SET_DRIVE` `0x10`
 
@@ -185,8 +191,10 @@ Notes:
 
 Behavior:
 
+- Semantic: closed-loop normalized velocity command
 - `LINK_ID_ESP` updates `RobotControl_SetCmd_ESP`
 - `LINK_ID_PC` updates `RobotControl_SetCmd_PC`
+- If current chassis mode is not `MODE_CLOSED_LOOP`, firmware returns `NACK` with `LINK_ERR_CTRL_MODE_REJECT`
 
 ### `SET_MODE` `0x11`
 
@@ -208,6 +216,18 @@ Behavior:
 
 - zero means disable
 - non-zero means enable
+
+### `SET_RAW` `0x13`
+
+- Request payload:
+  1. `left_q15` `i16`
+  2. `right_q15` `i16`
+
+Behavior:
+
+- Semantic: open-loop raw left/right normalized motor output
+- `LINK_ID_ESP` and `LINK_ID_PC` both route to `RobotControl_SetOpenLoopCmd(left, right, src, now_ms)`
+- If current chassis mode is not `MODE_OPEN_LOOP`, firmware returns `NACK` with `LINK_ERR_CTRL_MODE_REJECT`
 
 ### `GET_DIAG` `0x30`
 
@@ -261,7 +281,7 @@ OK PONG
 Response:
 
 ```text
-OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, MOTOR <l> <r>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>
+OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, RAW <l> <r>, MOTOR <l> <r>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>
 ```
 
 #### `STATUS`
@@ -269,7 +289,7 @@ OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, M
 Response format:
 
 ```text
-OK STATUS mode=<u> src=<u> v_cmd_x1000=<i> w_cmd_x1000=<i> v_est_x1000=<i> w_est_x1000=<i> yaw_x100=<i> vbat_mv=<i> imu_en=<u> imu_ok=<u> imu_acc_ok=<u> gz_cdps=<i> enc_fault=0xNN motor_ovr=<u>
+OK STATUS mode=<u> src=<u> cmd_sem=<u> v_cmd_x1000=<i> w_cmd_x1000=<i> raw_l_x1000=<i> raw_r_x1000=<i> v_est_x1000=<i> w_est_x1000=<i> yaw_x100=<i> vbat_mv=<i> imu_en=<u> imu_ok=<u> imu_acc_ok=<u> gz_cdps=<i> enc_fault=0xNN motor_ovr=<u>
 ```
 
 Host usage notes:
@@ -277,6 +297,37 @@ Host usage notes:
 - `v_est_x1000` / `w_est_x1000` are the odometry-ready motion estimates.
 - `yaw_x100` is the fused heading that should be preferred over integrating raw gyro on the host.
 - `gz_cdps` is the bias-corrected Z gyro when IMU attitude is valid.
+- `cmd_sem=0/1/2` means `none/velocity/raw`
+- `v_cmd_x1000` / `w_cmd_x1000` are only meaningful when `cmd_sem=1`
+- `raw_l_x1000` / `raw_r_x1000` are only meaningful when `cmd_sem=2`
+- `motor_ovr=1` now means chassis is currently in `MODE_OPEN_LOOP`; it no longer means legacy PC-side direct motor bypass.
+- `pc_ctrl` / `esp_ctrl` now mean the corresponding velocity command is still fresh within `CMD_TIMEOUT_MS`, not merely that the link sent control traffic recently.
+
+#### `DRIVE <v> <w>` / `CTRL <v> <w>`
+
+- Semantic: closed-loop normalized chassis velocity command
+- Valid only in `MODE_CLOSED_LOOP`
+- If current mode is not closed loop, firmware responds:
+
+```text
+ERR DRIVE requires MODE CLOSED
+```
+
+#### `RAW <left> <right>` / `MOTOR <left> <right>`
+
+- Semantic: open-loop raw left/right normalized motor output
+- Valid only in `MODE_OPEN_LOOP`
+- If current mode is not open loop, firmware responds:
+
+```text
+ERR RAW requires MODE OPEN
+```
+
+- Success response:
+
+```text
+OK RAW l_x1000=<i> r_x1000=<i>
+```
 
 #### `DEBUG`
 
@@ -313,6 +364,66 @@ ASCII odom consumer notes:
 - `raw_ax_mg`, `raw_ay_mg`, and `raw_az_mg` are transmitted only for diagnosis.
 - If IMU calibration is incomplete or invalid, `imu_valid=0` and `gz_bias_cdps=0`.
 - If the accelerometer fails static calibration or later runtime gating, `imu_accel_valid=0` even when `imu_valid=1`.
+
+## ESP01S HTTP Bridge Contract
+
+`ESP01S/ESP01S/ESP01S.ino` exposes a small HTTP control surface that now follows the same control semantics as the STM32 firmware.
+
+### Endpoints
+
+- `GET /mode?m=<0|1|2>`
+  - `0` idle
+  - `1` open-loop raw output
+  - `2` closed-loop velocity
+  - bridge waits for STM32 ACK before reporting success
+- `GET /cmd?v=<float>&w=<float>`
+  - Semantic: closed-loop velocity command
+  - Valid only when current mode is `2`
+  - Returns HTTP `409` if chassis is not in closed-loop mode
+- `GET /raw?l=<float>&r=<float>`
+  - Semantic: open-loop left/right raw output
+  - Valid only when current mode is `1`
+  - Returns HTTP `409` if chassis is not in open-loop mode
+- `GET /status`
+  - Returns cached JSON status assembled from the most recent binary `GET_STATUS` response
+- `GET /health`
+  - Returns bridge diagnostics
+
+### `/status` JSON Notes
+
+Important fields:
+
+- `mode`
+- `mode_name`
+- `control_api`
+- `cmd_space`
+- `src`
+- `v`
+- `w`
+- `raw_left`
+- `raw_right`
+- `imu`
+- `enc`
+
+`control_api` is the bridge-side hint for which HTTP control endpoint should currently be used:
+
+- `none` for idle
+- `raw` for open-loop
+- `drive` for closed-loop
+
+`cmd_space` reports the current command interpretation in the most recent STM32 status frame:
+
+- `none`
+- `velocity`
+- `raw`
+
+## Current Mode Policy
+
+Current firmware startup / local-control policy is:
+
+- boot default mode is `MODE_CLOSED_LOOP`
+- PS2 local movement input from `MODE_IDLE` auto-enters `MODE_CLOSED_LOOP`
+- open-loop must be selected explicitly through `MODE 1`, binary `SET_MODE(1)`, or `GET /mode?m=1`
 
 ## USART1 Debug And FireWater Telemetry
 

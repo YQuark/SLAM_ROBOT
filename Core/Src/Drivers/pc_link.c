@@ -26,10 +26,6 @@ static volatile uint8_t s_ascii_line_ready = 0u;
 static uint8_t s_stream_enable = 0u;
 static uint16_t s_stream_hz = PC_STREAM_HZ_DEFAULT;
 static uint32_t s_stream_last_ms = 0u;
-static uint8_t s_motor_override = 0u;
-static float s_motor_left = 0.0f;
-static float s_motor_right = 0.0f;
-static uint32_t s_motor_override_ts = 0u;
 static uint8_t s_rx_fifo[PC_RX_FIFO_SIZE];
 static volatile uint16_t s_rx_fifo_head = 0u;
 static volatile uint16_t s_rx_fifo_tail = 0u;
@@ -396,18 +392,21 @@ static void PC_Link_HandleAsciiLine(char *line,
 
     if (str_ieq(cmd, "HELP")) {
         pc_mark_query_activity();
-        pc_uart_send("OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, MOTOR <l> <r>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>\r\n");
+        pc_uart_send("OK CMDS: PING, HELP, STATUS, DEBUG, MODE <0|1|2>, DRIVE <v> <w>, CTRL <v> <w>, RAW <l> <r>, MOTOR <l> <r>, STOP, IMU <0|1>, STREAM <ON|OFF> [hz], RATE <hz>\r\n");
         return;
     }
 
     if (str_ieq(cmd, "STATUS")) {
         pc_mark_query_activity();
         st = RobotControl_GetState();
-        pc_uart_sendf("OK STATUS mode=%u src=%u v_cmd_x1000=%ld w_cmd_x1000=%ld v_est_x1000=%ld w_est_x1000=%ld yaw_x100=%ld vbat_mv=%ld imu_en=%u imu_ok=%u imu_acc_ok=%u gz_cdps=%ld enc_fault=0x%02X motor_ovr=%u pc_link=%u pc_ctrl=%u ctrl_backlog=%u ctrl_max_pending=%u tel_age_ms=%u pc_uart_err=%u pc_uart_rec=%u esp_uart_err=%u esp_uart_rec=%u\r\n",
+        pc_uart_sendf("OK STATUS mode=%u src=%u cmd_sem=%u v_cmd_x1000=%ld w_cmd_x1000=%ld raw_l_x1000=%ld raw_r_x1000=%ld v_est_x1000=%ld w_est_x1000=%ld yaw_x100=%ld vbat_mv=%ld imu_en=%u imu_ok=%u imu_acc_ok=%u gz_cdps=%ld enc_fault=0x%02X motor_ovr=%u pc_link=%u pc_ctrl=%u ctrl_backlog=%u ctrl_max_pending=%u tel_age_ms=%u pc_uart_err=%u pc_uart_rec=%u esp_uart_err=%u esp_uart_rec=%u\r\n",
                       (unsigned int)RobotControl_GetMode(),
                       (unsigned int)st->src,
+                      (unsigned int)st->cmd_semantics,
                       (long)scaled_i32(st->v_cmd, 1000.0f),
                       (long)scaled_i32(st->w_cmd, 1000.0f),
+                      (long)scaled_i32(st->raw_left_cmd, 1000.0f),
+                      (long)scaled_i32(st->raw_right_cmd, 1000.0f),
                       (long)scaled_i32(st->v_est, 1000.0f),
                       (long)scaled_i32(st->w_est, 1000.0f),
                       (long)scaled_i32(st->yaw_est, 100.0f),
@@ -418,7 +417,7 @@ static void PC_Link_HandleAsciiLine(char *line,
                       (long)((imu && Attitude_GetData()->valid) ?
                           scaled_i32(imu->gz_dps - Attitude_GetData()->gyro_bias_z, 100.0f) : 0),
                       (unsigned int)st->enc_fault_mask,
-                      (unsigned int)s_motor_override,
+                      (unsigned int)(RobotControl_GetMode() == MODE_OPEN_LOOP),
                       (unsigned int)st->pc_link_online,
                       (unsigned int)st->pc_control_online,
                       (unsigned int)st->ctrl_backlog_events,
@@ -490,10 +489,7 @@ static void PC_Link_HandleAsciiLine(char *line,
 
     if (str_ieq(cmd, "STOP")) {
         pc_mark_control_activity();
-        s_motor_override = 0u;
-        s_motor_left = 0.0f;
-        s_motor_right = 0.0f;
-        s_motor_override_ts = 0u;
+        RobotControl_SetOpenLoopCmd(0.0f, 0.0f, CMD_SRC_PC, HAL_GetTick());
         motor_coast_all();
         RobotControl_SetCmd_PC(0.0f, 0.0f, HAL_GetTick());
         pc_uart_send("OK STOP\r\n");
@@ -514,10 +510,10 @@ static void PC_Link_HandleAsciiLine(char *line,
         if (v < -1.0f) v = -1.0f;
         if (w > 1.0f) w = 1.0f;
         if (w < -1.0f) w = -1.0f;
-        s_motor_override = 0u;
-        s_motor_left = 0.0f;
-        s_motor_right = 0.0f;
-        s_motor_override_ts = 0u;
+        if (RobotControl_GetMode() == MODE_OPEN_LOOP) {
+            pc_uart_send("ERR DRIVE requires MODE CLOSED\r\n");
+            return;
+        }
         RobotControl_SetCmd_PC(v, w, HAL_GetTick());
         pc_uart_sendf("OK DRIVE v_x1000=%ld w_x1000=%ld\r\n",
                       (long)scaled_i32(v, 1000.0f),
@@ -525,33 +521,26 @@ static void PC_Link_HandleAsciiLine(char *line,
         return;
     }
 
-    if (str_ieq(cmd, "MOTOR")) {
+    if (str_ieq(cmd, "RAW") || str_ieq(cmd, "MOTOR")) {
         pc_mark_control_activity();
         if (!arg1 || !arg2) {
-            pc_uart_send("ERR MOTOR expect: MOTOR <left> <right>\r\n");
+            pc_uart_send("ERR RAW expect: RAW <left> <right>\r\n");
             return;
         }
         if (!parse_float_token(arg1, &v) || !parse_float_token(arg2, &w)) {
-            pc_uart_send("ERR MOTOR bad number\r\n");
+            pc_uart_send("ERR RAW bad number\r\n");
             return;
         }
         if (v > 1.0f) v = 1.0f;
         if (v < -1.0f) v = -1.0f;
         if (w > 1.0f) w = 1.0f;
         if (w < -1.0f) w = -1.0f;
-        s_motor_override = 1u;
-        s_motor_left = v;
-        s_motor_right = w;
-        s_motor_override_ts = HAL_GetTick();
-        motor_set(MOTOR_L1, v);
-        motor_set(MOTOR_L2, v);
-        motor_set(MOTOR_R1, w);
-        motor_set(MOTOR_R2, w);
-        Encoder_SetMotorOutput(ENC_L1, v);
-        Encoder_SetMotorOutput(ENC_L2, v);
-        Encoder_SetMotorOutput(ENC_R1, w);
-        Encoder_SetMotorOutput(ENC_R2, w);
-        pc_uart_sendf("OK MOTOR l_x1000=%ld r_x1000=%ld\r\n",
+        if (RobotControl_GetMode() != MODE_OPEN_LOOP) {
+            pc_uart_send("ERR RAW requires MODE OPEN\r\n");
+            return;
+        }
+        RobotControl_SetOpenLoopCmd(v, w, CMD_SRC_PC, HAL_GetTick());
+        pc_uart_sendf("OK RAW l_x1000=%ld r_x1000=%ld\r\n",
                       (long)scaled_i32(v, 1000.0f),
                       (long)scaled_i32(w, 1000.0f));
         return;
@@ -722,24 +711,6 @@ void PC_Link_Poll(const BatteryStatus_t *batt,
     if (has_line) {
         line[PC_ASCII_LINE_MAX - 1u] = '\0';
         PC_Link_HandleAsciiLine(line, batt, imu);
-    }
-
-    if (s_motor_override && s_motor_override_ts != 0u &&
-        (HAL_GetTick() - s_motor_override_ts) <= LINK_ACTIVE_TIMEOUT_MS) {
-        motor_set(MOTOR_L1, s_motor_left);
-        motor_set(MOTOR_L2, s_motor_left);
-        motor_set(MOTOR_R1, s_motor_right);
-        motor_set(MOTOR_R2, s_motor_right);
-        Encoder_SetMotorOutput(ENC_L1, s_motor_left);
-        Encoder_SetMotorOutput(ENC_L2, s_motor_left);
-        Encoder_SetMotorOutput(ENC_R1, s_motor_right);
-        Encoder_SetMotorOutput(ENC_R2, s_motor_right);
-    } else if (s_motor_override) {
-        s_motor_override = 0u;
-        s_motor_left = 0.0f;
-        s_motor_right = 0.0f;
-        s_motor_override_ts = 0u;
-        motor_coast_all();
     }
 
     PC_Link_StreamTick(batt, imu);

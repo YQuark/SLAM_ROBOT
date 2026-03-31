@@ -1,0 +1,37 @@
+{
+  "run_id": "20260331-control-mode-semantics",
+  "stage": "deep_interview",
+  "goal": "Commit the current baseline, then implement the recommended control-mode semantic cleanup so open-loop and closed-loop commands are no longer mixed.",
+  "deliverable": "A code change set plus governed artifacts that separates raw duty control from velocity closed-loop control in PC and ESP paths.",
+  "constraints": [
+    "Preserve the existing closed-loop control core.",
+    "Avoid a full protocol redesign in one turn.",
+    "Keep backward compatibility where practical, but prefer semantic clarity over silent ambiguous behavior."
+  ],
+  "acceptance_criteria": [
+    "Open-loop mode only consumes explicit raw left/right duty commands.",
+    "Closed-loop drive commands are no longer implicitly reused as open-loop commands.",
+    "PC and binary host protocols expose a distinct raw-duty command path."
+  ],
+  "product_acceptance_criteria": [
+    "The system behavior in MODE_OPEN_LOOP becomes explicit and understandable.",
+    "The user can intentionally choose raw duty testing versus velocity control from host interfaces."
+  ],
+  "manual_spot_checks": [
+    "In MODE_CLOSED_LOOP, DRIVE/CTRL should work and RAW/MOTOR should be rejected or clearly gated.",
+    "In MODE_OPEN_LOOP, RAW/MOTOR should work and DRIVE should be rejected or clearly gated.",
+    "Binary SET_MODE + SET_RAW should provide an explicit ESP/PC open-loop path."
+  ],
+  "completion_language_policy": "Do not claim field behavior is perfect without hardware validation. Claim only semantic cleanup and static verification.",
+  "delivery_truth_contract": "Only claim the protocol and control-path changes that are implemented in the current source.",
+  "non_goals": [
+    "Retuning PID gains.",
+    "Redesigning arbitration for all command sources.",
+    "Removing every legacy alias in one step."
+  ],
+  "autonomy_mode": "interactive_governed",
+  "inferred_assumptions": [
+    "A semantic cleanup can be delivered without changing the broader robot dynamics architecture.",
+    "The existing MOTOR command can be preserved as a compatibility alias of an explicit raw-duty path."
+  ]
+}

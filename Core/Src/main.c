@@ -800,7 +800,7 @@ int main(void)
         if ((fabsf(v) > 0.03f || fabsf(w) > 0.03f) &&
             RobotControl_GetMode() == MODE_IDLE &&
             !s_uv_cutoff_active) {
-          RobotControl_SetMode(MODE_OPEN_LOOP);
+          RobotControl_SetMode(MODE_CLOSED_LOOP);
         }
         RobotControl_SetCmd_PS2(v, w, now);
       } else {

@@ -1,0 +1,7 @@
+{
+  "run_id": "20260331-control-architecture-hardening",
+  "verification": [
+    "static rg verification completed",
+    "build not run because cmake is unavailable"
+  ]
+}

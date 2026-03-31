@@ -34,6 +34,7 @@ static const uint8_t MSG_CMD_GET_STATUS = 0x02;
 static const uint8_t MSG_CMD_SET_DRIVE = 0x10;
 static const uint8_t MSG_CMD_SET_MODE = 0x11;
 static const uint8_t MSG_CMD_SET_IMU = 0x12;
+static const uint8_t MSG_CMD_SET_RAW = 0x13;
 static const uint8_t MSG_CMD_GET_DIAG = 0x30;
 static const uint8_t MSG_CMD_CLEAR_DIAG = 0x31;
 static const uint8_t MSG_CMD_GET_FAULT_LOG = 0x32;
@@ -64,10 +65,13 @@ struct StatusData {
   uint32_t uptimeMs;
   uint8_t mode;
   uint8_t src;
+  uint8_t cmdSemantics;
   uint16_t vbMv;
   uint16_t pctX10;
   int16_t vQ15;
   int16_t wQ15;
+  int16_t rawLeftQ15;
+  int16_t rawRightQ15;
   int16_t gzX10;
   uint8_t imuEnabled;
   uint8_t imuValid;
@@ -75,8 +79,8 @@ struct StatusData {
   uint32_t lastRxMs;
 };
 
-static StatusData g_status = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-static char g_statusJson[320] = "{}";
+static StatusData g_status = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static char g_statusJson[448] = "{}";
 
 static uint8_t g_rxAccum[COBS_MAX];
 static uint16_t g_rxAccumLen = 0;
@@ -87,12 +91,22 @@ static uint32_t g_lastCmdTxMs = 0;
 static float g_pendingCmdV = 0.0f;
 static float g_pendingCmdW = 0.0f;
 static bool g_cmdDirty = false;
+static float g_lastRawL = 0.0f;
+static float g_lastRawR = 0.0f;
+static uint32_t g_lastRawTxMs = 0;
+static float g_pendingRawL = 0.0f;
+static float g_pendingRawR = 0.0f;
+static bool g_rawDirty = false;
 static float g_txCmdV = 0.0f;
 static float g_txCmdW = 0.0f;
+static float g_txRawL = 0.0f;
+static float g_txRawR = 0.0f;
 static char g_resetReason[64] = {0};
 static uint32_t g_lastHttpCmdMs = 0;
 static float g_lastHttpCmdV = 0.0f;
 static float g_lastHttpCmdW = 0.0f;
+static float g_lastHttpRawL = 0.0f;
+static float g_lastHttpRawR = 0.0f;
 static uint32_t g_lastHttpRxMs = 0;
 static uint32_t g_uartTxTimeouts = 0;
 static uint32_t g_loopMaxGapMs = 0;
@@ -101,7 +115,7 @@ static uint32_t g_loopLastMs = 0;
 static const uint32_t WDT_TIMEOUT_MS = 8000;
 static const uint32_t DRIVE_SEND_PERIOD_MS = 40;  // Reduce command TX pressure
 static const uint32_t CMD_IDLE_STOP_MS = 250;     // Stop quickly after HTTP command loss
-static const uint32_t STATUS_POLL_MS = 2000;  // Reduce status polling frequency
+static const uint32_t STATUS_POLL_MS = 500;
 static const uint32_t STA_CONNECT_TIMEOUT_MS = 15000;
 static const uint32_t CMD_DUP_FILTER_MS = 100;
 static const uint16_t SERIAL_RX_BUDGET_BYTES = 256;
@@ -249,11 +263,31 @@ static void buildStatusJson() {
   float pct = g_status.pctX10 / 10.0f;
   float vCmd = g_status.vQ15 / 32767.0f;
   float wCmd = g_status.wQ15 / 32767.0f;
+  float rawLeft = g_status.rawLeftQ15 / 32767.0f;
+  float rawRight = g_status.rawRightQ15 / 32767.0f;
   float gz = g_status.gzX10 / 10.0f;
+  const char *modeName = "idle";
+  const char *controlApi = "none";
+  const char *cmdSpace = "none";
+
+  if (g_status.mode == 1) {
+    modeName = "open_loop";
+    controlApi = "raw";
+  } else if (g_status.mode == 2) {
+    modeName = "closed_loop";
+    controlApi = "drive";
+  }
+  if (g_status.cmdSemantics == 1u) {
+    cmdSpace = "velocity";
+  } else if (g_status.cmdSemantics == 2u) {
+    cmdSpace = "raw";
+  }
 
   snprintf(g_statusJson, sizeof(g_statusJson),
            "{\"uptime_ms\":%lu,\"mode\":%u,\"src\":%u,"
            "\"vbatt\":%.3f,\"percent\":%.1f,\"v\":%.3f,\"w\":%.3f,"
+           "\"raw_left\":%.3f,\"raw_right\":%.3f,"
+           "\"mode_name\":\"%s\",\"control_api\":\"%s\",\"cmd_space\":\"%s\","
            "\"imu\":{\"gz\":%.1f,\"enabled\":%u,\"valid\":%u},"
            "\"enc\":[%d,%d,%d,%d]}",
            (unsigned long)g_status.uptimeMs,
@@ -263,6 +297,11 @@ static void buildStatusJson() {
            pct,
            vCmd,
            wCmd,
+           rawLeft,
+           rawRight,
+           modeName,
+           controlApi,
+           cmdSpace,
            gz,
            (unsigned)g_status.imuEnabled,
            (unsigned)g_status.imuValid,
@@ -293,6 +332,15 @@ static bool parseStatusExtra(const uint8_t *data, uint16_t len) {
     }
   } else {
     for (int i = 0; i < 4; i++) g_status.encVel[i] = 0;
+  }
+  if (len >= 45) {
+    g_status.cmdSemantics = data[40];
+    g_status.rawLeftQ15 = (int16_t)getU16LE(&data[41]);
+    g_status.rawRightQ15 = (int16_t)getU16LE(&data[43]);
+  } else {
+    g_status.cmdSemantics = 0u;
+    g_status.rawLeftQ15 = 0;
+    g_status.rawRightQ15 = 0;
   }
 
   g_status.lastRxMs = millis();
@@ -470,6 +518,23 @@ static bool sendModeNoAck(uint8_t mode) {
   return sendFrame(MSG_CMD_SET_MODE, 0, seq, payload, sizeof(payload));
 }
 
+static bool sendModeAwaitAck(uint8_t mode, uint16_t timeoutMs) {
+  uint8_t payload[1] = {mode};
+  return sendCommandAwaitAck(MSG_CMD_SET_MODE, payload, sizeof(payload), timeoutMs, nullptr, nullptr);
+}
+
+static bool sendRawNoAck(float left, float right) {
+  uint8_t seq = nextSeq();
+  left = clampf(left, -1.0f, 1.0f);
+  right = clampf(right, -1.0f, 1.0f);
+  int16_t leftQ15 = (int16_t)(left * 32767.0f);
+  int16_t rightQ15 = (int16_t)(right * 32767.0f);
+  uint8_t payload[4];
+  putU16LE(&payload[0], (uint16_t)leftQ15);
+  putU16LE(&payload[2], (uint16_t)rightQ15);
+  return sendFrame(MSG_CMD_SET_RAW, 0, seq, payload, sizeof(payload));
+}
+
 static bool requestStatusNoBlock(void) {
   uint8_t seq = nextSeq();
   return sendFrame(MSG_CMD_GET_STATUS, FLAG_ACK_REQ, seq, nullptr, 0);
@@ -479,34 +544,51 @@ static void applyPendingStopIfIdle(uint32_t now) {
   if ((uint32_t)(now - g_lastHttpCmdMs) > CMD_IDLE_STOP_MS) {
     g_pendingCmdV = 0.0f;
     g_pendingCmdW = 0.0f;
+    g_pendingRawL = 0.0f;
+    g_pendingRawR = 0.0f;
     g_cmdDirty = true;
+    g_rawDirty = true;
   }
 }
 
-static void serviceDriveTx(uint32_t now) {
-  static uint32_t lastDriveTx = 0;
-  if ((uint32_t)(now - lastDriveTx) < DRIVE_SEND_PERIOD_MS) return;
+static void serviceControlTx(uint32_t now) {
+  static uint32_t lastTx = 0;
+  const bool openLoop = (g_status.mode == 1u);
 
-  // If command has not changed, keepalive at a lower rate to reduce link pressure.
-  if (!g_cmdDirty && (uint32_t)(now - g_lastCmdTxMs) < 150u) {
+  if ((uint32_t)(now - lastTx) < DRIVE_SEND_PERIOD_MS) return;
+
+  if (openLoop) {
+    if (!g_rawDirty && (uint32_t)(now - g_lastRawTxMs) < 150u) {
+      return;
+    }
+    if (g_rawDirty) {
+      g_rawDirty = false;
+    }
+    g_txRawL = g_pendingRawL;
+    g_txRawR = g_pendingRawR;
+    if (sendRawNoAck(g_txRawL, g_txRawR)) {
+      g_lastRawL = g_txRawL;
+      g_lastRawR = g_txRawR;
+      g_lastRawTxMs = now;
+    }
+    lastTx = now;
     return;
   }
 
+  if (!g_cmdDirty && (uint32_t)(now - g_lastCmdTxMs) < 150u) {
+    return;
+  }
   if (g_cmdDirty) {
     g_cmdDirty = false;
   }
-
-  // 闂備胶鍎甸弲娑㈡偤閵娧勬殰閻庢稒蓱婵挳鎮归幁鎺戝闁哄棗绻橀弻娑樜熼悡搴㈢€诲銈庡亝閸旀瑥鐣烽妸鈺佺闁圭儤鎸歌闂備胶顭堥敃锕傚Υ鐎ｎ剚顫曟繝闈涙川閳绘梻鈧箍鍎遍幊宥囧垝閸偒娈介柣鎰煐閻濐亞绱掗鍡涙鐎垫澘瀚板畷鐔碱敇閻斿皝鍋?
-  // Keep TX command aligned with latest pending command.
   g_txCmdV = g_pendingCmdV;
   g_txCmdW = g_pendingCmdW;
-
   if (sendDriveNoAck(g_txCmdV, g_txCmdW)) {
     g_lastCmdV = g_txCmdV;
     g_lastCmdW = g_txCmdW;
     g_lastCmdTxMs = now;
   }
-  lastDriveTx = now;
+  lastTx = now;
 }
 
 static void serviceStatusPoll(uint32_t now) {
@@ -609,21 +691,22 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button id="left">←</button><button id="stop" class="stop">STOP</button><button id="right">→</button>
         <div></div><button id="down">↓</button><div></div>
       </div>
-      <div class="hint">长按方向键持续控制，松手自动停止</div>
+      <div class="hint" id="controlHint">闭环模式下发送速度指令，开环模式下发送左右原始输出，松手自动停止</div>
     </div>
 
     <div class="card">
       <h2 class="title">模式切换</h2>
       <div class="modes">
         <button id="mode0" class="mode" onclick="setMode(0)">待机</button>
-        <button id="mode1" class="mode" onclick="setMode(1)">开环</button>
-        <button id="mode2" class="mode" onclick="setMode(2)">闭环</button>
+        <button id="mode1" class="mode" onclick="setMode(1)">原始输出</button>
+        <button id="mode2" class="mode" onclick="setMode(2)">速度闭环</button>
       </div>
     </div>
 
     <div class="card">
       <h2 class="title">状态</h2>
       <div class="row"><span class="label">模式</span><b id="mode" class="value">--</b></div>
+      <div class="row"><span class="label">控制接口</span><b id="ctrlApi" class="value">--</b></div>
       <div class="row"><span class="label">来源</span><b id="src" class="value">--</b></div>
       <div class="row"><span class="label">电池</span><b id="batt" class="value">--</b></div>
       <div class="row"><span class="label">最近更新</span><b id="ts" class="value">--</b></div>
@@ -658,19 +741,30 @@ let holdV = 0, holdW = 0;
 let holdActive = false;
 let holdTimer = null;
 let wifiPollDiv = 0;
+let statusMode = 0;
 
 function fmt(x){ return (Math.round(x*100)/100).toFixed(2); }
 function action(v,w){
+  if (statusMode === 1) {
+    if (Math.abs(v) < 0.01 && Math.abs(w) < 0.01) return '停止';
+    if (Math.abs(v - w) < 0.05) return v > 0 ? '前进' : '后退';
+    if (Math.abs(v + w) < 0.05) return v > 0 ? '右转' : '左转';
+    return '原始输出';
+  }
   if(Math.abs(v)<0.01&&Math.abs(w)<0.01)return '停止';
   if(Math.abs(v)>=Math.abs(w))return v>0?'前进':'后退';
   return w>0?'左转':'右转';
 }
 
 function doSend(v,w){
+  const endpoint = (statusMode === 1) ? '/raw' : '/cmd';
+  const q = (statusMode === 1)
+    ? `l=${v.toFixed(3)}&r=${w.toFixed(3)}`
+    : `v=${v.toFixed(3)}&w=${w.toFixed(3)}`;
   inflight = true;
   const ctl = new AbortController();
   const to = setTimeout(()=>ctl.abort(), REQ_TIMEOUT_MS);
-  fetch(`/cmd?v=${v.toFixed(3)}&w=${w.toFixed(3)}`, {cache:'no-store', signal: ctl.signal})
+  fetch(`${endpoint}?${q}`, {cache:'no-store', signal: ctl.signal})
     .catch(()=>{})
     .finally(()=>{
       clearTimeout(to);
@@ -684,7 +778,9 @@ function doSend(v,w){
 }
 
 function send(v,w){
-  document.getElementById('cmd').textContent = `v=${fmt(v)} w=${fmt(w)}`;
+  document.getElementById('cmd').textContent = (statusMode === 1)
+    ? `l=${fmt(v)} r=${fmt(w)}`
+    : `v=${fmt(v)} w=${fmt(w)}`;
   document.getElementById('action').textContent = action(v,w);
   const now = Date.now();
   const dv = Math.abs(v - lastSentV);
@@ -731,8 +827,8 @@ function bindHold(id, v, w){
 
 bindHold('up', V, 0);
 bindHold('down', -V, 0);
-bindHold('left', 0, W);
-bindHold('right', 0, -W);
+bindHold('left', -W, W);
+bindHold('right', W, -W);
 document.getElementById('stop').addEventListener('click', ()=>stopHold(true));
 window.addEventListener('blur', ()=>stopHold(true));
 document.addEventListener('visibilitychange', ()=>{ if(document.hidden) stopHold(true); });
@@ -746,7 +842,10 @@ function setModeActive(m){
   });
 }
 
-async function setMode(m){ await fetch(`/mode?m=${m}`).catch(()=>{}); }
+async function setMode(m){
+  stopHold(true);
+  await fetch(`/mode?m=${m}`).catch(()=>{});
+}
 
 async function connectWifi(){
   const ssid = document.getElementById('wifiSsid').value.trim();
@@ -768,13 +867,30 @@ async function poll(){
     document.getElementById('status').textContent=t;
     document.getElementById('ts').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});
     const j=JSON.parse(t);
-    const mm={0:'待机',1:'开环',2:'闭环'};
+    const mm={0:'待机',1:'原始输出',2:'速度闭环'};
     const ss={0:'无',1:'手柄',2:'ESP',3:'PC'};
+    statusMode = Number(j.mode || 0);
     document.getElementById('mode').textContent=mm[j.mode]??j.mode;
     setModeActive(Number(j.mode));
+    document.getElementById('ctrlApi').textContent = j.control_api ?? '--';
     document.getElementById('src').textContent=ss[j.src]??j.src;
     if(j.vbatt!==undefined && j.percent!==undefined){
       document.getElementById('batt').textContent=`${j.vbatt.toFixed(2)}V ${j.percent.toFixed(1)}%`;
+    }
+    if (j.cmd_space === 'raw' && j.raw_left !== undefined && j.raw_right !== undefined) {
+      document.getElementById('cmd').textContent = `l=${fmt(j.raw_left)} r=${fmt(j.raw_right)}`;
+      document.getElementById('action').textContent = action(j.raw_left, j.raw_right);
+    } else if (j.v !== undefined && j.w !== undefined) {
+      document.getElementById('cmd').textContent = `v=${fmt(j.v)} w=${fmt(j.w)}`;
+      document.getElementById('action').textContent = action(j.v, j.w);
+    }
+    const hint = document.getElementById('controlHint');
+    if (statusMode === 1) {
+      hint.textContent = '当前是原始输出模式：上/下=左右同向，左/右=左右反向原始输出';
+    } else if (statusMode === 2) {
+      hint.textContent = '当前是速度闭环模式：上/下发送 v，左/右发送 w，松手自动停止';
+    } else {
+      hint.textContent = '待机模式下不会输出运动命令';
     }
   }catch(_){ }
   if ((wifiPollDiv++ % 3) === 0) {
@@ -808,6 +924,10 @@ static void handleCmd() {
     server.send(400, "text/plain", "missing v/w");
     return;
   }
+  if (g_status.mode != 2u) {
+    server.send(409, "text/plain", "MODE_CLOSED_LOOP required");
+    return;
+  }
 
   float v = clampf(server.arg("v").toFloat(), -1.0f, 1.0f);
   float w = clampf(server.arg("w").toFloat(), -1.0f, 1.0f);
@@ -837,6 +957,44 @@ static void handleCmd() {
   server.send(200, "text/plain", "OK");
 }
 
+static void handleRaw() {
+  if (!server.hasArg("l") || !server.hasArg("r")) {
+    server.send(400, "text/plain", "missing l/r");
+    return;
+  }
+  if (g_status.mode != 1u) {
+    server.send(409, "text/plain", "MODE_OPEN_LOOP required");
+    return;
+  }
+
+  float left = clampf(server.arg("l").toFloat(), -1.0f, 1.0f);
+  float right = clampf(server.arg("r").toFloat(), -1.0f, 1.0f);
+  uint32_t now = millis();
+
+  if (fabsf(left - g_lastHttpRawL) < 0.001f &&
+      fabsf(right - g_lastHttpRawR) < 0.001f &&
+      (uint32_t)(now - g_lastHttpRxMs) < 120u) {
+    server.send(200, "text/plain", "OK");
+    return;
+  }
+  g_lastHttpRawL = left;
+  g_lastHttpRawR = right;
+  g_lastHttpRxMs = now;
+
+  if (fabsf(left - g_lastRawL) < 0.001f &&
+      fabsf(right - g_lastRawR) < 0.001f &&
+      (uint32_t)(now - g_lastRawTxMs) < CMD_DUP_FILTER_MS) {
+    server.send(200, "text/plain", "OK");
+    return;
+  }
+
+  g_pendingRawL = left;
+  g_pendingRawR = right;
+  g_lastHttpCmdMs = now;
+  g_rawDirty = true;
+  server.send(200, "text/plain", "OK");
+}
+
 static void handleMode() {
   if (!server.hasArg("m")) {
     server.send(400, "text/plain", "missing m");
@@ -849,8 +1007,19 @@ static void handleMode() {
     return;
   }
 
-  bool ok = sendModeNoAck((uint8_t)m);
-  if (ok) server.send(200, "application/json", "{\"ok\":true}");
+  bool ok = sendModeAwaitAck((uint8_t)m, 120u);
+  if (ok) {
+    uint32_t now = millis();
+    g_pendingCmdV = 0.0f;
+    g_pendingCmdW = 0.0f;
+    g_pendingRawL = 0.0f;
+    g_pendingRawR = 0.0f;
+    g_cmdDirty = true;
+    g_rawDirty = true;
+    g_lastHttpCmdMs = now;
+    (void)requestStatusNoBlock();
+    server.send(200, "application/json", "{\"ok\":true}");
+  }
   else server.send(500, "application/json", "{\"ok\":false}");
 }
 
@@ -863,11 +1032,14 @@ static void handleHealth() {
   uint32_t age = (g_status.lastRxMs == 0) ? 0xFFFFFFFFu : (millis() - g_status.lastRxMs);
   snprintf(buf, sizeof(buf),
            "{\"last_cmd_v\":%.3f,\"last_cmd_w\":%.3f,\"last_ack_ready\":%s,"
+           "\"last_raw_l\":%.3f,\"last_raw_r\":%.3f,"
            "\"last_ack_nack\":%s,\"last_ack_err\":%u,\"status_age_ms\":%lu,"
            "\"reset_reason\":\"%s\",\"free_heap\":%lu,"
            "\"uart_tx_timeouts\":%lu,\"loop_max_gap_ms\":%lu,\"uptime_ms\":%lu}",
            g_lastCmdV,
            g_lastCmdW,
+           g_lastRawL,
+           g_lastRawR,
            g_ack.ready ? "true" : "false",
            g_ack.nack ? "true" : "false",
            (unsigned)g_ack.err,
@@ -963,6 +1135,7 @@ static void tryAutoConnectSta() {
 static void registerHttpRoutes() {
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
+  server.on("/raw", handleRaw);
   server.on("/mode", handleMode);
   server.on("/status", handleStatus);
   server.on("/health", handleHealth);
@@ -999,7 +1172,7 @@ void loop() {
   }
   g_loopLastMs = now;
   applyPendingStopIfIdle(now);
-  serviceDriveTx(now);
+  serviceControlTx(now);
   serviceStatusPoll(now);
   serviceStaConnectState(now);
 }

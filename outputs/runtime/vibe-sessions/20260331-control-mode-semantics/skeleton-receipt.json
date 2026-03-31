@@ -1,0 +1,17 @@
+{
+  "run_id": "20260331-control-mode-semantics",
+  "stage": "skeleton_check",
+  "date": "2026-03-31",
+  "cwd": "/mnt/d/Document/Work/projects/Clion",
+  "branch": "master",
+  "repo_dirty": false,
+  "existing_artifacts": [
+    "docs/requirements/2026-03-31-chassis-control-architecture.md",
+    "docs/plans/2026-03-31-chassis-control-architecture-execution-plan.md"
+  ],
+  "focus_areas": [
+    "open-loop versus closed-loop command semantics",
+    "PC and ESP command-path separation",
+    "removal of direct PC-side motor override from the poll loop"
+  ]
+}

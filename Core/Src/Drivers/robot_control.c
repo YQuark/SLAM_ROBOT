@@ -24,6 +24,7 @@ static uint32_t s_mode_switch_ts = 0;
 static float s_open_v = 0.0f;
 static float s_open_w = 0.0f;
 static uint32_t s_open_ts = 0;
+static cmd_source_t s_open_src = CMD_SRC_NONE;
 
 static RobotControlState_t s_st;
 static PI_Controller_t s_pi[4];
@@ -168,6 +169,16 @@ static void clear_motion_command_cache(void)
     s_open_v = 0.0f;
     s_open_w = 0.0f;
     s_open_ts = 0u;
+    s_open_src = CMD_SRC_NONE;
+}
+
+static void clear_status_command_view(void)
+{
+    s_st.v_cmd = 0.0f;
+    s_st.w_cmd = 0.0f;
+    s_st.raw_left_cmd = 0.0f;
+    s_st.raw_right_cmd = 0.0f;
+    s_st.cmd_semantics = CMD_SEM_NONE;
 }
 
 /* ---------------- 核心接口 ---------------- */
@@ -191,6 +202,7 @@ void RobotControl_Init(void)
     s_pc_control_ts = 0u;
     s_last_telemetry_ms = 0u;
     clear_motion_command_cache();
+    clear_status_command_view();
     s_st.imu_enabled = USE_IMU_DEFAULT;
 }
 
@@ -220,11 +232,12 @@ ControlMode_t RobotControl_GetMode(void)
     return s_mode;
 }
 
-void RobotControl_SetOpenLoopCmd(float v, float w)
+void RobotControl_SetOpenLoopCmd(float left, float right, cmd_source_t src, uint32_t now_ms)
 {
-    s_open_v = clampf(v, -1.0f, 1.0f);
-    s_open_w = clampf(w, -1.0f, 1.0f);
-    s_open_ts = HAL_GetTick();
+    s_open_v = clampf(left, -1.0f, 1.0f);
+    s_open_w = clampf(right, -1.0f, 1.0f);
+    s_open_ts = now_ms;
+    s_open_src = src;
 }
 
 void RobotControl_SetCmd_PS2(float v, float w, uint32_t now_ms)
@@ -414,14 +427,9 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
     uint32_t best_ts = 0u;
 
     /* Only explicit PC control activity may seize ownership. Query traffic must not. */
-    if (pc_control_ok) {
-        if (pc_ok) {
-            *v = s_pc_v;
-            *w = s_pc_w;
-        } else {
-            *v = 0.0f;
-            *w = 0.0f;
-        }
+    if (pc_control_ok && pc_ok) {
+        *v = s_pc_v;
+        *w = s_pc_w;
         *src = CMD_SRC_PC;
         return;
     }
@@ -520,34 +528,24 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 
     choose_cmd(now_ms, &v_cmd, &w_cmd, &src);
 
-    if (s_mode == MODE_OPEN_LOOP) {
-        if ((s_open_ts != 0u) &&
-            ((now_ms - s_open_ts) <= CMD_TIMEOUT_MS) &&
-            ((s_open_v != 0.0f) || (s_open_w != 0.0f))) {
-            v_cmd = s_open_v;
-            w_cmd = s_open_w;
-            src = CMD_SRC_ESP;
-        }
-    }
-
     if (src != s_prev_src) {
         s_prev_src = src;
         s_src_switch_ts = now_ms;
         s_st.src_switch_count++;
     }
-    s_st.src_transition_active = 0u;
+    s_st.src_transition_active =
+        (s_src_switch_ts != 0u) && ((now_ms - s_src_switch_ts) <= SRC_SWITCH_SMOOTH_MS);
 
-    s_st.v_cmd = v_cmd;
-    s_st.w_cmd = w_cmd;
+    clear_status_command_view();
     s_st.src = src;
     s_st.pc_link_online =
         (s_pc_link_ts != 0u) && ((now_ms - s_pc_link_ts) <= LINK_ACTIVE_TIMEOUT_MS);
     s_st.pc_control_online =
-        (s_pc_control_ts != 0u) && ((now_ms - s_pc_control_ts) <= LINK_ACTIVE_TIMEOUT_MS);
+        (s_pc_ts != 0u) && ((now_ms - s_pc_ts) <= CMD_TIMEOUT_MS);
     s_st.esp_link_online =
         (s_esp_link_ts != 0u) && ((now_ms - s_esp_link_ts) <= LINK_ACTIVE_TIMEOUT_MS);
     s_st.esp_control_online =
-        (s_esp_control_ts != 0u) && ((now_ms - s_esp_control_ts) <= LINK_ACTIVE_TIMEOUT_MS);
+        (s_esp_ts != 0u) && ((now_ms - s_esp_ts) <= CMD_TIMEOUT_MS);
     if (s_last_telemetry_ms == 0u) {
         s_st.telemetry_age_ms = 0u;
     } else {
@@ -579,9 +577,12 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     }
     s_safety_stop_active = 0u;
 
-    s_st.mode_transition_active = 0u;
+    s_st.mode_transition_active =
+        (s_mode_switch_ts != 0u) && ((now_ms - s_mode_switch_ts) <= MODE_TRANSITION_MS);
 
     if (s_mode == MODE_IDLE) {
+        clear_status_command_view();
+        s_st.src = CMD_SRC_NONE;
         stop_outputs_and_observe();
         return;
     }
@@ -607,36 +608,55 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     s_st.w_ref_filt = s_w_ref_filt;
 
     if (s_mode == MODE_OPEN_LOOP) {
-        float vL = clampf(s_v_ref_filt - s_w_ref_filt, -1.0f, 1.0f);
-        float vR = clampf(s_v_ref_filt + s_w_ref_filt, -1.0f, 1.0f);
-        motor_set(MOTOR_L1, vL);
-        motor_set(MOTOR_L2, vL);
-        motor_set(MOTOR_R1, vR);
-        motor_set(MOTOR_R2, vR);
+        float left;
+        float right;
+
+        if ((s_open_ts == 0u) || ((now_ms - s_open_ts) > CMD_TIMEOUT_MS)) {
+            clear_status_command_view();
+            s_st.src = CMD_SRC_NONE;
+            stop_outputs_and_observe();
+            return;
+        }
+
+        left = s_open_v;
+        right = s_open_w;
+        s_st.raw_left_cmd = left;
+        s_st.raw_right_cmd = right;
+        s_st.cmd_semantics = CMD_SEM_RAW;
+        s_st.src = s_open_src;
+
+        motor_set(MOTOR_L1, left);
+        motor_set(MOTOR_L2, left);
+        motor_set(MOTOR_R1, right);
+        motor_set(MOTOR_R2, right);
 
         /* 同步编码器电机输出状态 (用于断线检测) */
-        Encoder_SetMotorOutput(ENC_L1, vL);
-        Encoder_SetMotorOutput(ENC_L2, vL);
-        Encoder_SetMotorOutput(ENC_R1, vR);
-        Encoder_SetMotorOutput(ENC_R2, vR);
+        Encoder_SetMotorOutput(ENC_L1, left);
+        Encoder_SetMotorOutput(ENC_L2, left);
+        Encoder_SetMotorOutput(ENC_R1, right);
+        Encoder_SetMotorOutput(ENC_R2, right);
 
-        s_st.ref_cps[ENC_L1] = vL * MAX_CPS;
-        s_st.ref_cps[ENC_L2] = vL * MAX_CPS;
-        s_st.ref_cps[ENC_R1] = vR * MAX_CPS;
-        s_st.ref_cps[ENC_R2] = vR * MAX_CPS;
+        s_st.ref_cps[ENC_L1] = left * MAX_CPS;
+        s_st.ref_cps[ENC_L2] = left * MAX_CPS;
+        s_st.ref_cps[ENC_R1] = right * MAX_CPS;
+        s_st.ref_cps[ENC_R2] = right * MAX_CPS;
         for (int i = 0; i < 4; ++i) {
             s_st.meas_cps[i] = g_encoders[i].vel_cps;
         }
-        s_st.u_out[ENC_L1] = vL;
-        s_st.u_out[ENC_L2] = vL;
-        s_st.u_out[ENC_R1] = vR;
-        s_st.u_out[ENC_R2] = vR;
+        s_st.u_out[ENC_L1] = left;
+        s_st.u_out[ENC_L2] = left;
+        s_st.u_out[ENC_R1] = right;
+        s_st.u_out[ENC_R2] = right;
         return;
     }
 
     {
         float v_ref = s_v_ref_filt;
         float w_ref = s_w_ref_filt;
+
+        s_st.v_cmd = v_cmd;
+        s_st.w_cmd = w_cmd;
+        s_st.cmd_semantics = CMD_SEM_VELOCITY;
 
         s_outer_i_v = 0.0f;
         s_outer_i_w = 0.0f;

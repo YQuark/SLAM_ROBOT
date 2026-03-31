@@ -1,0 +1,28 @@
+{
+  "run_id": "20260331-control-mode-semantics",
+  "stage": "plan_execute",
+  "status": "completed_with_partial_verification",
+  "implemented_changes": [
+    {
+      "file": "Core/Src/Drivers/robot_control.c",
+      "change": "Restricted MODE_OPEN_LOOP to explicit cached raw left/right duty commands instead of reusing generic velocity commands."
+    },
+    {
+      "file": "Core/Src/Drivers/pc_link.c",
+      "change": "Removed the direct PC motor-override poll-loop bypass and exposed RAW/MOTOR as an explicit open-loop command path gated by mode."
+    },
+    {
+      "file": "Core/Src/Drivers/link_proto.c",
+      "change": "Added LINK_MSG_CMD_SET_RAW so the binary host protocol has a distinct raw-duty open-loop command path."
+    }
+  ],
+  "root_cause_summary": [
+    "Open-loop and closed-loop semantics were blurred because generic velocity commands and a direct PC motor override both bypassed a clear mode contract.",
+    "The existing open-loop storage path existed, but it was not the authoritative open-loop command path for host interfaces."
+  ],
+  "verification": {
+    "static_checks": "completed",
+    "build_check": "blocked",
+    "build_blocker": "cmake executable not available in current environment"
+  }
+}

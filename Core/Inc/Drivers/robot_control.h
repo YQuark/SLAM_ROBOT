@@ -24,10 +24,19 @@ extern "C" {
         LINK_ACTIVITY_CONTROL = 1,
     } link_activity_t;
 
+    typedef enum {
+        CMD_SEM_NONE = 0,
+        CMD_SEM_VELOCITY = 1,
+        CMD_SEM_RAW = 2,
+    } cmd_semantics_t;
+
     /* 运行时控制状态（用于调参观测/上位机） */
     typedef struct {
-        float v_cmd;          /* [-1,1] */
-        float w_cmd;          /* [-1,1] */
+        float v_cmd;          /* closed-loop v command, [-1,1] */
+        float w_cmd;          /* closed-loop w command, [-1,1] */
+        float raw_left_cmd;   /* open-loop left raw output, [-1,1] */
+        float raw_right_cmd;  /* open-loop right raw output, [-1,1] */
+        uint8_t cmd_semantics;
         cmd_source_t src;
         uint8_t pc_link_online;
         uint8_t pc_control_online;
@@ -82,8 +91,8 @@ extern "C" {
     void RobotControl_SetMode(ControlMode_t mode);
     ControlMode_t RobotControl_GetMode(void);
 
-    // 开环专用设置接口
-    void RobotControl_SetOpenLoopCmd(float v, float w);
+    // 开环专用设置接口：直接设置左右侧原始输出
+    void RobotControl_SetOpenLoopCmd(float left, float right, cmd_source_t src, uint32_t now_ms);
 
     /* 初始化（会重置 PI、命令、IMU 状态） */
     void RobotControl_Init(void);
