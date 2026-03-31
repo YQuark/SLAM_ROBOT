@@ -16,6 +16,8 @@ void PC_Link_Poll(const BatteryStatus_t *batt,
 
 void PC_Link_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 
+void PC_Link_UART_TxCpltCallback(UART_HandleTypeDef *huart);
+
 void PC_Link_UART_ErrorCallback(UART_HandleTypeDef *huart);
 
 #ifdef __cplusplus

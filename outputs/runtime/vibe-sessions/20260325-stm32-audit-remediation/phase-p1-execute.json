@@ -1,0 +1,24 @@
+{
+  "date": "2026-03-25",
+  "run": "20260325-stm32-audit-remediation",
+  "phase": "p1_execute",
+  "mode": "interactive_governed",
+  "summary": {
+    "implemented": [
+      "ESP 链路改为 ISR 只入队、poll 侧解析",
+      "PC/ESP 两条 UART 链路新增错误风暴阈值与 poll 侧主动恢复",
+      "状态口新增 UART 错误与恢复计数观测"
+    ],
+    "files": [
+      "Core/Inc/Drivers/robot_control.h",
+      "Core/Inc/Drivers/robot_config.h",
+      "Core/Src/Drivers/robot_control.c",
+      "Core/Src/Drivers/esp_link.c",
+      "Core/Src/Drivers/pc_link.c"
+    ],
+    "verification": {
+      "command": "'/mnt/d/Program Files/STM32CubeCLT_1.19.0/CMake/bin/cmake.exe' --build --preset Debug",
+      "result": "pass"
+    }
+  }
+}

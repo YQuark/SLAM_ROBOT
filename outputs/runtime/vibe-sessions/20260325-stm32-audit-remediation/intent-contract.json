@@ -1,0 +1,56 @@
+{
+  "run_id": "20260325-stm32-audit-remediation",
+  "stage": "deep_interview",
+  "mode": "interactive_governed",
+  "goal": "Review the STM32 portion of the audit document and remediate the firmware issues that are still valid and can be solved in software within this repository.",
+  "deliverable": [
+    "A triaged mapping from audit findings to current STM32 firmware state",
+    "Concrete firmware changes for the approved remediation scope",
+    "A diagnosis-backed remediation for USART3/CP2102 freeze risk and jerky host-driven motion",
+    "Build-oriented verification evidence and cleanup receipts"
+  ],
+  "constraints": [
+    "Focus only on the lower machine / STM32 firmware side.",
+    "Prioritize software-only changes in this repository; hardware redesign items can be documented but not implemented.",
+    "Do not regress current serial protocol behavior without explicit requirement changes."
+  ],
+  "acceptance_criteria": [
+    "Each implemented fix traces back to a still-valid STM32 audit finding.",
+    "The USART3 receive/transmit path is made less likely to stall the whole firmware under host traffic.",
+    "Host-driven wheel motion becomes smoother by removing obvious low-speed pulse-inducing control behavior.",
+    "Changes build successfully or a concrete blocker is documented with evidence.",
+    "Final response distinguishes fixed items, deferred hardware-only items, and residual risks."
+  ],
+  "non_goals": [
+    "ROS2 upper-machine changes",
+    "PCB or power-stage hardware redesign",
+    "Implementing every audit suggestion if it is already fixed or out of scope for firmware-only work"
+  ],
+  "assumptions": [
+    "The user wants direct remediation, not only a report.",
+    "The highest-value firmware items are the issues still present in current code, not the full historical audit list.",
+    "Plan approval is required before code edits because the vibe runtime is in interactive governed mode."
+  ],
+  "triage_snapshot": {
+    "already_addressed_or_stale": [
+      "S3-001 watchdog feed only once: current main loop feeds watchdog continuously"
+    ],
+    "likely_still_valid": [
+      "S3-002 encoder fault does not escalate to active stop/fault handling",
+      "S3-003 control cycle is still tick-polling instead of timer-driven",
+      "S3-007 UART ISR still performs parser work",
+      "S3-010 command-timeout behavior is basic and should be re-checked against safety expectations",
+      "S3-016 IMU failure handling should be reviewed for full disable/degrade behavior",
+      "USART3 host link can stall system responsiveness under blocking transmit plus IRQ-heavy receive behavior",
+      "Closed-loop low-speed behavior is likely jerky because Ki is zero while startup assist injects short duty pulses"
+    ],
+    "hardware_or_board_level": [
+      "S3-004 motor overcurrent detection",
+      "S3-005 hardware emergency stop"
+    ]
+  },
+  "new_user_observations": {
+    "freeze": "USART3 connected through on-board CP2102 to host can cause the whole system to appear dead; pressing reset is ineffective and power-cycle is required.",
+    "jerky_motion": "When the upper machine commands motion, wheels rotate intermittently rather than smoothly."
+  }
+}

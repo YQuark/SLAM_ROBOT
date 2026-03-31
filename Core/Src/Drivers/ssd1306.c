@@ -5,6 +5,11 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "i2c.h"
+
+#define SSD1306_I2C_CMD_TIMEOUT_MS   5u
+#define SSD1306_I2C_DATA_TIMEOUT_MS 20u
+
 static uint8_t SSD1306_Buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
 static uint8_t CurrentX = 0;
 static uint8_t CurrentY = 0;
@@ -43,9 +48,10 @@ static const uint8_t CN12_GLYPHS[][32] = {
 static HAL_StatusTypeDef ssd1306_WriteCommand(uint8_t cmd)
 {
     uint8_t data[2];
+
     data[0] = 0x00;
     data[1] = cmd;
-    return HAL_I2C_Master_Transmit(SSD1306_I2C, SSD1306_I2C_ADDR, data, 2, 100);
+    return HAL_I2C_Master_Transmit(SSD1306_I2C, SSD1306_I2C_ADDR, data, 2, SSD1306_I2C_CMD_TIMEOUT_MS);
 }
 
 static HAL_StatusTypeDef ssd1306_WriteData(const uint8_t *data, uint16_t size)
@@ -56,7 +62,7 @@ static HAL_StatusTypeDef ssd1306_WriteData(const uint8_t *data, uint16_t size)
     buf[0] = 0x40;
     memcpy(&buf[1], data, size);
 
-    return HAL_I2C_Master_Transmit(SSD1306_I2C, SSD1306_I2C_ADDR, buf, size + 1, 100);
+    return HAL_I2C_Master_Transmit(SSD1306_I2C, SSD1306_I2C_ADDR, buf, size + 1, SSD1306_I2C_DATA_TIMEOUT_MS);
 }
 
 static const uint8_t Font6x8[][6] = {

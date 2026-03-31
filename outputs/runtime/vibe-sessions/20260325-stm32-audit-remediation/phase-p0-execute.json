@@ -1,0 +1,26 @@
+{
+  "date": "2026-03-25",
+  "run": "20260325-stm32-audit-remediation",
+  "phase": "p0_execute",
+  "mode": "interactive_governed",
+  "summary": {
+    "implemented": [
+      "拆分 PC/ESP 链路在线与控制活动语义",
+      "新增控制批处理积压、遥测年龄、UART 错误和源切换观测字段",
+      "让 OLED、控制调试输出和 huart1 遥测在控制积压时让路",
+      "为 MOTOR 旁路增加超时回收"
+    ],
+    "files": [
+      "Core/Inc/Drivers/robot_control.h",
+      "Core/Src/Drivers/robot_control.c",
+      "Core/Src/Drivers/link_proto.c",
+      "Core/Src/Drivers/pc_link.c",
+      "Core/Src/Drivers/esp_link.c",
+      "Core/Src/main.c"
+    ],
+    "verification": {
+      "command": "'/mnt/d/Program Files/STM32CubeCLT_1.19.0/CMake/bin/cmake.exe' --build --preset Debug",
+      "result": "pass"
+    }
+  }
+}

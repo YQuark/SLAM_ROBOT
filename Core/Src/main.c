@@ -1044,6 +1044,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   PC_Link_UART_RxCpltCallback(huart);
 }
 
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  PC_Link_UART_TxCpltCallback(huart);
+}
+
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   ESP_Link_UART_ErrorCallback(huart);

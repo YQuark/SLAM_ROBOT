@@ -1,0 +1,29 @@
+{
+  "run_id": "20260331-navigation-accuracy",
+  "stage": "plan_execute",
+  "status": "completed_with_partial_verification",
+  "implemented_changes": [
+    {
+      "file": "Core/Inc/Drivers/robot_config.h",
+      "change": "Enabled IMU by default, increased IMU update cadence from 100 ms to 20 ms, and introduced a coherent encoder-to-yaw-rate scale while reducing encoder dominance in yaw fusion."
+    },
+    {
+      "file": "Core/Src/Drivers/robot_control.c",
+      "change": "Fixed the observer so encoder-derived yaw is integrated in degree units rather than raw normalized wheel-difference units, and wrapped fused yaw consistently."
+    },
+    {
+      "file": "Core/Src/Drivers/pc_link.c",
+      "change": "Marked successful non-blocking PC stream transmissions as active telemetry so continuous upstream streaming is reflected in runtime state."
+    }
+  ],
+  "root_cause_summary": [
+    "Heading and turn geometry were degraded because yaw estimation integrated normalized wheel-speed difference directly as if it were an angle quantity.",
+    "Runtime IMU contribution was disabled by default and refreshed too slowly at 100 ms to support accurate heading assistance.",
+    "The host stream path was non-blocking but did not report itself as live telemetry activity."
+  ],
+  "verification": {
+    "static_checks": "completed",
+    "build_check": "blocked",
+    "build_blocker": "cmake executable not available in current environment"
+  }
+}

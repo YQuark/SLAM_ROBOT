@@ -1,0 +1,39 @@
+{
+  "run_id": "20260331-navigation-accuracy",
+  "stage": "deep_interview",
+  "goal": "Improve heading accuracy, odometry quality, straight-line tracking, and host-link protocol readiness while continuous upstream telemetry remains active.",
+  "deliverable": "A diagnosis-backed firmware refinement set with governed artifacts, code changes, and explicit verification notes.",
+  "constraints": [
+    "Preserve the existing project architecture and avoid a full navigation stack rewrite.",
+    "Keep USART3 host telemetry active while ensuring control remains usable.",
+    "Prefer code paths that can be statically justified from the current firmware."
+  ],
+  "acceptance_criteria": [
+    "Heading estimation and straight-line control use a more coherent signal path than the current default configuration.",
+    "Host-facing odometry/telemetry fields better match motion-relevant state and reduce right-angle distortion risk.",
+    "Communication behavior is explicit about how continuous telemetry coexists with host commands."
+  ],
+  "product_acceptance_criteria": [
+    "The chassis should track straighter under the same PS2 command input after the change set.",
+    "The host should continue receiving streaming data without freezing the control loop.",
+    "The exported motion state should be more suitable for mapping/navigation than the current payload."
+  ],
+  "manual_spot_checks": [
+    "Drive the chassis straight under PS2 and observe whether left/right drift decreases.",
+    "Run host-side mapping with telemetry enabled and compare corner shape and accumulated odometry error before and after.",
+    "Verify that host communication continues while motion commands and telemetry are both active."
+  ],
+  "completion_language_policy": "Do not claim field-level navigation accuracy is solved without on-board validation. Only claim the implemented control, telemetry, and protocol refinements.",
+  "delivery_truth_contract": "Only claim code paths that were actually changed and statically checked. Report build limitations explicitly.",
+  "non_goals": [
+    "Full SLAM-side algorithm changes on the host computer.",
+    "Per-wheel factory calibration from live measurement data that is unavailable in the current environment.",
+    "DMA/RTOS redesign of the entire communication stack."
+  ],
+  "autonomy_mode": "interactive_governed",
+  "inferred_assumptions": [
+    "Current heading quality is limited partly because IMU usage is disabled by default in runtime configuration.",
+    "Current host telemetry is not yet a clean odometry contract and likely under-specifies the motion quantities needed for mapping.",
+    "Straight-line drift can be reduced in firmware by improving heading hold participation and per-side balance handling before any hardware-only conclusion."
+  ]
+}

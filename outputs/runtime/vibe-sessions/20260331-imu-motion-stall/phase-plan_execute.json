@@ -1,0 +1,28 @@
+{
+  "run_id": "20260331-imu-motion-stall",
+  "stage": "plan_execute",
+  "status": "completed_with_partial_verification",
+  "implemented_changes": [
+    {
+      "file": "Core/Src/i2c.c",
+      "change": "Added bounded I2C1 bus recovery routine that deinitializes I2C1, clocks SCL manually, emits a STOP condition, and reinitializes the peripheral."
+    },
+    {
+      "file": "Core/Src/Drivers/mpu6050.c",
+      "change": "Runtime MPU6050 register and bulk reads/writes now invoke one recovery-assisted retry after I2C failure."
+    },
+    {
+      "file": "Core/Src/Drivers/ssd1306.c",
+      "change": "SSD1306 command/data writes now invoke one recovery-assisted retry after I2C failure."
+    }
+  ],
+  "root_cause_summary": [
+    "Violent motion alone does not create an obvious infinite-loop path in Attitude_Update.",
+    "The more plausible freeze path is a motion-induced MPU6050 transport fault that leaves shared I2C1 unhealthy, affecting both IMU and OLED traffic."
+  ],
+  "verification": {
+    "static_checks": "completed",
+    "build_check": "blocked",
+    "build_blocker": "cmake executable not available in current environment"
+  }
+}

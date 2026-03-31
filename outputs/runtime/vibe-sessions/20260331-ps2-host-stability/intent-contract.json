@@ -1,0 +1,38 @@
+{
+  "run_id": "20260331-ps2-host-stability",
+  "stage": "deep_interview",
+  "goal": "Diagnose and mitigate PS2 disconnect and apparent restart behavior that appears while the robot is connected to the host for mapping/navigation.",
+  "deliverable": "A diagnosis-backed firmware hardening change set with requirements, plan, code changes, and verification notes.",
+  "constraints": [
+    "Preserve existing USART3 host protocol behavior.",
+    "Prefer minimal, local fixes over architecture-wide rewrites.",
+    "Do not assume hardware is the primary fault path because the user has already rechecked the hardware."
+  ],
+  "acceptance_criteria": [
+    "PS2 communication becomes less sensitive to host-side serial activity.",
+    "I2C-driven IMU/OLED stalls are less likely to block the main loop long enough to destabilize control or trigger watchdog resets.",
+    "Changes remain traceable to concrete code paths and verification evidence."
+  ],
+  "product_acceptance_criteria": [
+    "Host mapping/navigation sessions should no longer commonly induce PS2 invalid-mode warnings or apparent board restarts under the same usage pattern.",
+    "Existing ASCII/binary host commands on USART3 continue working."
+  ],
+  "manual_spot_checks": [
+    "Connect host on USART3 and enable mapping/navigation traffic while repeatedly using PS2 controls.",
+    "Observe whether PS2 invalid-mode warnings disappear or drop sharply.",
+    "Observe reset flags and boot logs for absence of IWDG-triggered resets during the scenario."
+  ],
+  "completion_language_policy": "Do not claim the field issue is fully resolved without code-level evidence and local verification. State residual hardware-risk uncertainty explicitly.",
+  "delivery_truth_contract": "Only claim implemented mitigations and locally verified properties. Do not overstate hardware certainty.",
+  "non_goals": [
+    "Full refactor of all blocking UART paths to DMA or queued transport.",
+    "Full I2C bus-recovery subsystem redesign.",
+    "Retuning IMU fusion parameters based solely on the connector change."
+  ],
+  "autonomy_mode": "interactive_governed",
+  "inferred_assumptions": [
+    "The reported 'restart' can be caused by watchdog reset after long blocking paths, not only by power loss.",
+    "The plug-in MPU6050 improves signal integrity but does not remove the shared-I2C stall risk in firmware.",
+    "PS2 failures during host traffic are plausibly timing-corruption issues because PS2 is implemented by GPIO bit-bang without interrupt masking."
+  ]
+}

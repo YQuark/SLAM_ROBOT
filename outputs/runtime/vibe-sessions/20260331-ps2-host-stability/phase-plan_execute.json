@@ -1,0 +1,28 @@
+{
+  "run_id": "20260331-ps2-host-stability",
+  "stage": "plan_execute",
+  "status": "completed_with_partial_verification",
+  "implemented_changes": [
+    {
+      "file": "Core/Src/Drivers/ps2.c",
+      "change": "Protected each PS2 frame transfer with a short IRQ-masked critical section so host UART interrupts cannot corrupt bit-bang timing mid-frame."
+    },
+    {
+      "file": "Core/Src/Drivers/mpu6050.c",
+      "change": "Reduced MPU6050 I2C transaction timeout from 100 ms to 10 ms for register and bulk reads."
+    },
+    {
+      "file": "Core/Src/Drivers/ssd1306.c",
+      "change": "Reduced SSD1306 I2C command/data transaction timeouts from 100 ms to 5 ms / 20 ms."
+    }
+  ],
+  "root_cause_summary": [
+    "PS2 is implemented by GPIO bit-bang timing and was vulnerable to asynchronous USART3 interrupt preemption during host traffic.",
+    "MPU6050 and OLED share I2C1 with long blocking HAL timeouts; repeated stalls could significantly starve the main loop and contribute to apparent reset behavior via watchdog expiration."
+  ],
+  "verification": {
+    "static_checks": "completed",
+    "build_check": "blocked",
+    "build_blocker": "cmake executable not available in current environment"
+  }
+}

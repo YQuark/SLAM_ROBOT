@@ -460,18 +460,21 @@ static void update_observer(float dt)
     float meas_r = 0.5f * (g_encoders[ENC_R1].vel_cps + g_encoders[ENC_R2].vel_cps);
     float v_est = 0.5f * (meas_l + meas_r) / MAX_CPS;
     float w_est = 0.5f * (meas_r - meas_l) / MAX_CPS;
+    float yaw_rate_dps = w_est * YAW_ENC_DPS_SCALE;
 
     s_st.v_est = v_est;
     s_st.w_est = w_est;
 
-    /* 编码器积分yaw */
-    s_yaw_enc += w_est * dt;
+    /* 编码器侧航向估计必须先转换到角速度量纲，再做积分。 */
+    s_yaw_enc += yaw_rate_dps * dt;
+    s_yaw_enc = wrap_angle_deg(s_yaw_enc);
 
     /* 使用姿态融合后的yaw角 */
     if (s_st.imu_enabled && s_st.imu_valid) {
         /* s_yaw_imu 已在 RobotControl_UpdateIMU 中通过 Attitude_Update 更新 */
         /* 使用互补融合: 编码器权重 YAW_FUSION_ALPHA */
-        s_st.yaw_est = YAW_FUSION_ALPHA * s_yaw_enc + (1.0f - YAW_FUSION_ALPHA) * s_yaw_imu;
+        s_st.yaw_est = wrap_angle_deg(
+            YAW_FUSION_ALPHA * s_yaw_enc + (1.0f - YAW_FUSION_ALPHA) * s_yaw_imu);
     } else {
         /* 无IMU时仅使用编码器积分 */
         s_st.yaw_est = s_yaw_enc;

@@ -38,6 +38,8 @@ static uint8_t s_uart_err_burst = 0u;
 static uint32_t s_uart_err_window_ts = 0u;
 static uint32_t s_last_recovery_ms = 0u;
 static volatile uint8_t s_recover_pending = 0u;
+static char s_stream_tx_buf[256];
+static volatile uint8_t s_stream_tx_busy = 0u;
 
 static uint8_t pc_rx_fifo_push(uint8_t ch)
 {
@@ -112,6 +114,30 @@ static void pc_uart_sendf(const char *fmt, ...)
     }
     if (!s_huart) return;
     (void)HAL_UART_Transmit(s_huart, (uint8_t *)out, (uint16_t)n, 20);
+}
+
+static uint8_t pc_uart_stream_sendf(const char *fmt, ...)
+{
+    va_list args;
+    int n;
+
+    if (!fmt || !s_huart || s_stream_tx_busy) return 0u;
+    if (s_huart->gState != HAL_UART_STATE_READY) return 0u;
+
+    va_start(args, fmt);
+    n = vsnprintf(s_stream_tx_buf, sizeof(s_stream_tx_buf), fmt, args);
+    va_end(args);
+    if (n <= 0) return 0u;
+    if ((size_t)n >= sizeof(s_stream_tx_buf)) {
+        n = (int)(sizeof(s_stream_tx_buf) - 1u);
+    }
+
+    s_stream_tx_busy = 1u;
+    if (HAL_UART_Transmit_IT(s_huart, (uint8_t *)s_stream_tx_buf, (uint16_t)n) != HAL_OK) {
+        s_stream_tx_busy = 0u;
+        return 0u;
+    }
+    return 1u;
 }
 
 static uint8_t str_ieq(const char *a, const char *b)
@@ -252,7 +278,7 @@ static void PC_Link_StreamOnce(const BatteryStatus_t *batt,
         gz_cdps = scaled_i32(imu->gz_dps - att->gyro_bias_z, 100.0f);
     }
 
-    pc_uart_sendf(
+    if (pc_uart_stream_sendf(
         "TEL,%lu,%u,%u,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
         (unsigned long)HAL_GetTick(),
         (unsigned int)RobotControl_GetMode(),
@@ -266,7 +292,9 @@ static void PC_Link_StreamOnce(const BatteryStatus_t *batt,
         (long)vel_l1, (long)vel_l2, (long)vel_r1, (long)vel_r2,
         (long)st->enc_fault_mask,
         (long)vbatt_mv, (long)pct_x10,
-        (long)raw_ax_mg, (long)raw_ay_mg, (long)raw_az_mg);
+        (long)raw_ax_mg, (long)raw_ay_mg, (long)raw_az_mg)) {
+        RobotControl_ReportTelemetry(HAL_GetTick());
+    }
 }
 
 static void PC_Link_StreamTick(const BatteryStatus_t *batt,
@@ -596,6 +624,7 @@ void PC_Link_Init(UART_HandleTypeDef *huart)
     s_uart_err_window_ts = 0u;
     s_last_recovery_ms = 0u;
     s_recover_pending = 0u;
+    s_stream_tx_busy = 0u;
     LinkProto_Init(LINK_ID_PC, huart);
     if (s_huart) {
         HAL_UART_Receive_IT(s_huart, &s_rx_ch, 1);
@@ -614,6 +643,12 @@ void PC_Link_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     HAL_UART_Receive_IT(s_huart, &s_rx_ch, 1);
 }
 
+void PC_Link_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (!s_huart || huart != s_huart) return;
+    s_stream_tx_busy = 0u;
+}
+
 void PC_Link_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     uint32_t now_ms;
@@ -626,6 +661,7 @@ void PC_Link_UART_ErrorCallback(UART_HandleTypeDef *huart)
     __HAL_UART_CLEAR_FEFLAG(huart);
     __HAL_UART_CLEAR_NEFLAG(huart);
     __HAL_UART_CLEAR_PEFLAG(huart);
+    s_stream_tx_busy = 0u;
 
     ascii_accum_reset();
     LinkProto_UartError(LINK_ID_PC);

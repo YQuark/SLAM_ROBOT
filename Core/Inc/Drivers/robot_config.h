@@ -17,7 +17,7 @@
 #define PS2_W_SCALE             1.0f
 #define PS2_DPAD_V             0.72f
 #define PS2_DPAD_W             0.58f
-#define IMU_READ_INTERVAL_MS   100u
+#define IMU_READ_INTERVAL_MS    20u
 #define BATTERY_INTERVAL_MS    500u
 #define OLED_INTERVAL_MS       500u
 #define ESP_POLL_INTERVAL_MS    10u
@@ -97,7 +97,8 @@
 #define OUTER_INT_LIM            0.40f
 
 /* ======== IMU / yaw fusion ======== */
-#define YAW_FUSION_ALPHA         0.70f      /* 0..1, higher=encoder dominated */
+#define YAW_FUSION_ALPHA         0.25f      /* 0..1, higher=encoder dominated */
+#define YAW_ENC_DPS_SCALE      180.0f      /* encoder-derived normalized w_est to deg/s */
 #define IMU_W_DPS_SCALE         180.0f      /* dps that maps to w=1.0 */
 #define YAW_HOLD_KP              1.10f
 #define YAW_HOLD_W_THRESH        0.06f
@@ -119,7 +120,7 @@
 
 /* ======== IMU yaw 阻尼 ======== */
 /* 当 |w| < IMU_DAMP_ACTIVE_W 时启用阻尼 */
-#define USE_IMU_DEFAULT          0u   /* 运行期仍可切换 */
+#define USE_IMU_DEFAULT          1u   /* 运行期仍可切换 */
 #define IMU_DAMP_ACTIVE_W      0.20f
 #define IMU_DAMP_K             0.008f /* w -= K * gz_dps */
 

@@ -1,0 +1,38 @@
+{
+  "run_id": "20260331-imu-motion-stall",
+  "stage": "deep_interview",
+  "goal": "Diagnose and mitigate system freezes that appear when the robot is shaken strongly, with evidence pointing to the MPU6050 path.",
+  "deliverable": "A diagnosis-backed firmware hardening change set that improves runtime recovery from IMU/I2C transport faults caused or exposed by motion.",
+  "constraints": [
+    "Preserve existing control and host-link behavior.",
+    "Prefer bounded recovery over large architectural changes.",
+    "Be explicit that connector or wiring intermittency can still exceed what software can mask."
+  ],
+  "acceptance_criteria": [
+    "The firmware should no longer rely on a permanently healthy I2C1 bus during motion.",
+    "MPU6050 and SSD1306 runtime accesses should attempt bounded bus recovery after I2C faults.",
+    "The change should be traceable to code paths that can actually freeze the main loop."
+  ],
+  "product_acceptance_criteria": [
+    "Large motion should be less likely to hard-freeze the board.",
+    "If IMU data becomes invalid due to motion or intermittent contact, the system should degrade and recover rather than hang."
+  ],
+  "manual_spot_checks": [
+    "Shake the robot strongly after boot and observe whether host stream and control loop continue updating.",
+    "Check whether the board avoids long apparent freezes or watchdog-triggered resets.",
+    "Check whether IMU validity may drop temporarily without causing system lockup."
+  ],
+  "completion_language_policy": "Do not claim the motion-induced freeze is fully eliminated without hardware-in-loop validation.",
+  "delivery_truth_contract": "Only claim code-level recovery improvements and static evidence from the firmware paths.",
+  "non_goals": [
+    "Claiming the plug-in MPU6050 hardware is fault-free.",
+    "Rewriting all I2C interactions to DMA or interrupt mode.",
+    "Changing the IMU fusion algorithm based on this symptom alone."
+  ],
+  "autonomy_mode": "interactive_governed",
+  "inferred_assumptions": [
+    "Violent motion itself does not make Attitude_Update loop forever; the more plausible freeze path is transport-layer I2C failure or bus lock.",
+    "A shared I2C1 fault can affect both MPU6050 and SSD1306, amplifying the visible freeze symptoms.",
+    "A bounded bus recovery plus retry strategy is an appropriate next step before deeper hardware redesign."
+  ]
+}

@@ -21,6 +21,11 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
+static void i2c_gpio_delay(void)
+{
+  for (volatile uint32_t i = 0u; i < 2000u; ++i) {
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -112,5 +117,49 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+HAL_StatusTypeDef I2C_BusRecover(I2C_HandleTypeDef *hi2c)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  if (hi2c == NULL || hi2c->Instance != I2C1) {
+    return HAL_ERROR;
+  }
+
+  (void)HAL_I2C_DeInit(hi2c);
+
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_SET);
+  i2c_gpio_delay();
+
+  for (uint8_t i = 0u; i < 9u; ++i) {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+    i2c_gpio_delay();
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    i2c_gpio_delay();
+  }
+
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
+  i2c_gpio_delay();
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+  i2c_gpio_delay();
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
+  i2c_gpio_delay();
+
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  return (HAL_I2C_Init(hi2c) == HAL_OK) ? HAL_OK : HAL_ERROR;
+}
 
 /* USER CODE END 1 */

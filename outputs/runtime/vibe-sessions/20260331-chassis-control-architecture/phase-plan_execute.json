@@ -1,0 +1,15 @@
+{
+  "run_id": "20260331-chassis-control-architecture",
+  "stage": "plan_execute",
+  "status": "completed",
+  "implemented_changes": [],
+  "root_cause_summary": [
+    "The current firmware has a valid open-loop branch and a valid closed-loop branch, but mode semantics and command-source semantics are partially entangled.",
+    "Dedicated open-loop command storage exists, but the common PC/ESP drive path usually feeds the generic command path instead.",
+    "This makes open-loop versus closed-loop behavior less explicit at the system level than it should be."
+  ],
+  "verification": {
+    "static_checks": "completed",
+    "build_check": "not_applicable"
+  }
+}

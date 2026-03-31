@@ -1,0 +1,35 @@
+{
+  "run_id": "20260331-chassis-control-architecture",
+  "stage": "deep_interview",
+  "goal": "Provide a governed architecture opinion on the current chassis control framework, especially the meaning and usefulness of open-loop versus closed-loop control and the surrounding command/protocol structure.",
+  "deliverable": "A concise but concrete architecture assessment with recommended direction, preserved as vibe artifacts.",
+  "constraints": [
+    "Do not overstate field performance conclusions without new testing.",
+    "Base the opinion on the current code paths rather than abstract textbook control advice.",
+    "Keep the recommendations actionable for future firmware refactoring."
+  ],
+  "acceptance_criteria": [
+    "Explain what the current framework is actually doing.",
+    "Identify the main architectural mismatches or ambiguities.",
+    "Recommend a cleaner target control architecture for this robot."
+  ],
+  "product_acceptance_criteria": [
+    "The user can decide whether to keep, simplify, or redesign the current open-loop/closed-loop split.",
+    "The opinion clearly distinguishes command modes, control modes, and communication modes."
+  ],
+  "manual_spot_checks": [
+    "Compare the stated architecture assessment against the current source files.",
+    "Use the recommendation later as a baseline for mode/protocol cleanup work."
+  ],
+  "completion_language_policy": "Do not claim the framework is production-ready; only assess its current structure and likely next direction.",
+  "delivery_truth_contract": "Only claim properties that are visible in the current code.",
+  "non_goals": [
+    "Immediate implementation of the redesign.",
+    "Numerical retuning of controller gains."
+  ],
+  "autonomy_mode": "interactive_governed",
+  "inferred_assumptions": [
+    "The user wants architectural judgment before further modification.",
+    "The present code has enough structure to support a clear recommendation without requiring new hardware data."
+  ]
+}

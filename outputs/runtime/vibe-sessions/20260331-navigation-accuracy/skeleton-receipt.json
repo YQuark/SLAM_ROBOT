@@ -1,0 +1,22 @@
+{
+  "run_id": "20260331-navigation-accuracy",
+  "stage": "skeleton_check",
+  "date": "2026-03-31",
+  "cwd": "/mnt/d/Document/Work/projects/Clion",
+  "branch": "master",
+  "repo_dirty": true,
+  "existing_artifacts": [
+    "docs/requirements/2026-03-25-stm32-audit-remediation.md",
+    "docs/requirements/2026-03-31-imu-motion-stall.md",
+    "docs/requirements/2026-03-31-ps2-host-stability.md",
+    "docs/plans/2026-03-25-stm32-audit-remediation-execution-plan.md",
+    "docs/plans/2026-03-31-imu-motion-stall-execution-plan.md",
+    "docs/plans/2026-03-31-ps2-host-stability-execution-plan.md"
+  ],
+  "focus_areas": [
+    "yaw estimation and heading hold behavior",
+    "odometry payload quality delivered to the host",
+    "straight-line chassis symmetry and wheel-balance behavior",
+    "host communication contract while continuous telemetry is active"
+  ]
+}

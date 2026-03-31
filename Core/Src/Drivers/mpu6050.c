@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "i2c.h"
 #include "usart.h"
 
 #define DEG2RAD 0.0174532925f
@@ -12,6 +13,7 @@
 #define IMU_ACCEL_CORR_NORM_MIN_G 0.60f
 #define IMU_ACCEL_CORR_NORM_MAX_G 1.60f
 #define IMU_ACCEL_AXIS_SAT_G      1.95f
+#define MPU6050_I2C_TIMEOUT_MS   10u
 
 static Attitude_t s_attitude = {0};
 static IMU_Calib_t s_calib = {0};
@@ -43,7 +45,7 @@ static HAL_StatusTypeDef MPU6050_WriteReg(uint8_t reg, uint8_t value)
                              I2C_MEMADD_SIZE_8BIT,
                              &value,
                              1,
-                             100);
+                             MPU6050_I2C_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef MPU6050_ReadReg(uint8_t reg, uint8_t *value)
@@ -54,7 +56,7 @@ HAL_StatusTypeDef MPU6050_ReadReg(uint8_t reg, uint8_t *value)
                             I2C_MEMADD_SIZE_8BIT,
                             value,
                             1,
-                            100);
+                            MPU6050_I2C_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef MPU6050_Init(void)
@@ -104,7 +106,7 @@ HAL_StatusTypeDef MPU6050_ReadRaw(MPU6050_Data_t *data)
                               I2C_MEMADD_SIZE_8BIT,
                               buf,
                               14,
-                              100);
+                              MPU6050_I2C_TIMEOUT_MS);
     if (status != HAL_OK) {
         return status;
     }

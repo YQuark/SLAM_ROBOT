@@ -1,0 +1,71 @@
+{
+  "run_id": "20260325-stm32-audit-remediation",
+  "stage": "plan_execute",
+  "implemented_changes": [
+    {
+      "area": "USART3 host link robustness",
+      "files": [
+        "Core/Src/Drivers/pc_link.c",
+        "Core/Src/Drivers/link_proto.c",
+        "Core/Src/usart.c",
+        "Core/Inc/Drivers/robot_config.h"
+      ],
+      "result": [
+        "USART3 Rx ISR now only enqueues bytes and rearms reception",
+        "Protocol and ASCII parsing moved to PC_Link_Poll()",
+        "USART3 IRQ priority reduced from highest priority to a lower priority",
+        "Binary link transmit timeout reduced from 100ms to 8ms to limit blocking stalls"
+      ]
+    },
+    {
+      "area": "Control timing",
+      "files": [
+        "Core/Src/main.c",
+        "Core/Inc/Drivers/robot_config.h"
+      ],
+      "result": [
+        "Control updates are now released by the TIM6/HAL tick callback through a pending counter",
+        "Main loop consumes control ticks instead of polling HAL_GetTick() thresholds directly"
+      ]
+    },
+    {
+      "area": "Safety stop on encoder faults",
+      "files": [
+        "Core/Src/Drivers/robot_control.c",
+        "Core/Inc/Drivers/robot_control.h"
+      ],
+      "result": [
+        "Encoder fault mask now triggers immediate brake-and-stop behavior in the control loop",
+        "Leaving idle due to a still-active encoder fault is blocked"
+      ]
+    },
+    {
+      "area": "Motion smoothness",
+      "files": [
+        "Core/Src/Drivers/robot_control.c",
+        "Core/Inc/Drivers/robot_config.h",
+        "Core/Src/main.c"
+      ],
+      "result": [
+        "Wheel PI controllers now use a small nonzero Ki",
+        "Startup assist is now edge-triggered and rearmed only after motion or command release",
+        "Default post-boot mode changed from open-loop to closed-loop for host control"
+      ]
+    }
+  ],
+  "verification": {
+    "build": {
+      "command": "'/mnt/d/Program Files/STM32CubeCLT_1.19.0/CMake/bin/cmake.exe' --build --preset Debug",
+      "result": "passed"
+    },
+    "static_checks": [
+      "Confirmed TIM6 callback now feeds a control pending counter",
+      "Confirmed PC_Link_UART_RxCpltCallback no longer parses protocol bytes directly",
+      "Confirmed encoder fault mask triggers safety stop logic in RobotControl_Update"
+    ]
+  },
+  "residual_risks": [
+    "No hardware-in-loop validation was performed in this session",
+    "Hardware-level issues such as current sensing and physical emergency stop remain out of scope"
+  ]
+}
