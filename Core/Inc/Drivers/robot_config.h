@@ -100,10 +100,27 @@
 #define YAW_FUSION_ALPHA         0.25f      /* 0..1, higher=encoder dominated */
 #define YAW_ENC_DPS_SCALE      180.0f      /* encoder-derived normalized w_est to deg/s */
 #define IMU_W_DPS_SCALE         180.0f      /* dps that maps to w=1.0 */
-#define YAW_HOLD_KP              1.10f
+#define YAW_HOLD_KP              1.20f
+#define YAW_HOLD_KI              0.70f
+#define YAW_HOLD_I_LIM           0.18f
 #define YAW_HOLD_W_THRESH        0.06f
 #define YAW_HOLD_V_MIN           0.08f
-#define YAW_HOLD_W_LIM           0.18f
+#define YAW_HOLD_W_LIM           0.28f
+
+/* ======== Straight-line balance ======== */
+/* 直行时根据左右编码器速度差做小幅差速补偿，抑制底盘天然跑偏。 */
+#define CTRL_USE_STRAIGHT_BALANCE  0u
+#define STRAIGHT_BALANCE_V_MIN    0.10f
+#define STRAIGHT_BALANCE_W_THRESH 0.05f
+#define STRAIGHT_BALANCE_KP       1.40f
+#define STRAIGHT_BALANCE_KI       0.45f
+#define STRAIGHT_BALANCE_I_LIM    0.10f
+#define STRAIGHT_BALANCE_W_LIM    0.26f
+#define STRAIGHT_TRIM_W           0.000f
+
+/* ======== Side gain trim ======== */
+/* 车体直行固定向左偏时设为正，固定向右偏时设为负。 */
+#define STRAIGHT_SIDE_TRIM        0.06f
 
 /* ======== Wheel loop anti-windup / low-speed ======== */
 #define PI_AW_KAW                0.25f

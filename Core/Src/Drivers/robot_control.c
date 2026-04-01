@@ -49,12 +49,14 @@ static MPU6050_Data_t s_imu_last;
 static float s_yaw_enc = 0.0f;
 static float s_yaw_imu = 0.0f;
 static float s_yaw_hold_ref = 0.0f;
+static float s_yaw_hold_i = 0.0f;
 static uint8_t s_yaw_hold_active = 0;
 
 static float s_v_ref_filt = 0.0f;
 static float s_w_ref_filt = 0.0f;
 static float s_outer_i_v = 0.0f;
 static float s_outer_i_w = 0.0f;
+static float s_straight_i_w = 0.0f;
 static float s_last_u[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 static uint16_t s_start_assist_ticks[4] = {0u, 0u, 0u, 0u};
 static uint8_t s_start_assist_armed[4] = {1u, 1u, 1u, 1u};
@@ -108,6 +110,16 @@ static inline float apply_cmd_deadzone(float v)
     return clampf(v, -1.0f, 1.0f);
 }
 
+static inline float side_gain_left(void)
+{
+    return clampf(1.0f + STRAIGHT_SIDE_TRIM, 0.5f, 1.5f);
+}
+
+static inline float side_gain_right(void)
+{
+    return clampf(1.0f - STRAIGHT_SIDE_TRIM, 0.5f, 1.5f);
+}
+
 static float PI_Update_AW(PI_Controller_t *pi, float err, float ff, float dt)
 {
     float u_unsat = pi->kp * err + pi->integral + ff;
@@ -138,9 +150,11 @@ static void reset_runtime_states(void)
     s_w_ref_filt = 0.0f;
     s_outer_i_v = 0.0f;
     s_outer_i_w = 0.0f;
+    s_straight_i_w = 0.0f;
     s_yaw_enc = 0.0f;
     s_yaw_imu = 0.0f;
     s_yaw_hold_ref = 0.0f;
+    s_yaw_hold_i = 0.0f;
     s_yaw_hold_active = 0;
     for (int i = 0; i < 4; ++i) {
         s_last_u[i] = 0.0f;
@@ -620,6 +634,8 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 
         left = s_open_v;
         right = s_open_w;
+        left = clampf(left * side_gain_left(), -1.0f, 1.0f);
+        right = clampf(right * side_gain_right(), -1.0f, 1.0f);
         s_st.raw_left_cmd = left;
         s_st.raw_right_cmd = right;
         s_st.cmd_semantics = CMD_SEM_RAW;
@@ -664,24 +680,57 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 #if CTRL_USE_YAW_HOLD
         if (fabsf(v_ref) >= YAW_HOLD_V_MIN && fabsf(w_cmd) < YAW_HOLD_W_THRESH) {
             float yaw_err;
+            float yaw_corr;
             if (!s_yaw_hold_active) {
                 s_yaw_hold_ref = s_st.yaw_est;
+                s_yaw_hold_i = 0.0f;
                 s_yaw_hold_active = 1u;
             }
             yaw_err = wrap_angle_deg(s_yaw_hold_ref - s_st.yaw_est);
-            w_ref += clampf(YAW_HOLD_KP * (yaw_err / 180.0f), -YAW_HOLD_W_LIM, YAW_HOLD_W_LIM);
+            s_yaw_hold_i += YAW_HOLD_KI * (yaw_err / 180.0f) * dt;
+            s_yaw_hold_i = clampf(s_yaw_hold_i, -YAW_HOLD_I_LIM, YAW_HOLD_I_LIM);
+            yaw_corr = YAW_HOLD_KP * (yaw_err / 180.0f) + s_yaw_hold_i;
+            w_ref += clampf(yaw_corr, -YAW_HOLD_W_LIM, YAW_HOLD_W_LIM);
         } else {
             s_yaw_hold_ref = s_st.yaw_est;
+            s_yaw_hold_i = 0.0f;
             s_yaw_hold_active = 0u;
         }
 #else
+        s_yaw_hold_i = 0.0f;
         s_yaw_hold_active = 0u;
+#endif
+
+#if CTRL_USE_STRAIGHT_BALANCE
+        if (fabsf(v_ref) >= STRAIGHT_BALANCE_V_MIN &&
+            fabsf(w_cmd) < STRAIGHT_BALANCE_W_THRESH) {
+            float straight_err = -s_st.w_est;
+            float straight_corr;
+            w_ref += STRAIGHT_TRIM_W;
+            s_straight_i_w += STRAIGHT_BALANCE_KI * straight_err * dt;
+            s_straight_i_w = clampf(s_straight_i_w,
+                                    -STRAIGHT_BALANCE_I_LIM,
+                                    STRAIGHT_BALANCE_I_LIM);
+            straight_corr = STRAIGHT_BALANCE_KP * straight_err + s_straight_i_w;
+            w_ref += clampf(straight_corr,
+                            -STRAIGHT_BALANCE_W_LIM,
+                            STRAIGHT_BALANCE_W_LIM);
+        } else {
+            s_straight_i_w = 0.0f;
+        }
+#else
+        s_straight_i_w = 0.0f;
 #endif
 
         ref_cps[ENC_L1] = clampf(v_ref - w_ref, -1.0f, 1.0f) * MAX_CPS;
         ref_cps[ENC_L2] = ref_cps[ENC_L1];
         ref_cps[ENC_R1] = clampf(v_ref + w_ref, -1.0f, 1.0f) * MAX_CPS;
         ref_cps[ENC_R2] = ref_cps[ENC_R1];
+
+        ref_cps[ENC_L1] *= side_gain_left();
+        ref_cps[ENC_L2] *= side_gain_left();
+        ref_cps[ENC_R1] *= side_gain_right();
+        ref_cps[ENC_R2] *= side_gain_right();
     }
 
     for (int i = 0; i < 4; ++i) {
