@@ -23,6 +23,7 @@
 #define LINK_FRAME_MIN 10u
 #define LINK_RESP_MAX 220u
 #define LINK_COBS_MAX 300u
+#define LINK_TX_QUEUE_DEPTH 4u
 
 typedef struct {
     UART_HandleTypeDef *huart;
@@ -43,6 +44,13 @@ typedef struct {
     uint8_t last_resp_type;
     uint16_t last_resp_len;
     uint8_t last_resp_data[LINK_COBS_MAX];
+
+    volatile uint8_t tx_busy;
+    volatile uint8_t tx_head;
+    volatile uint8_t tx_tail;
+    volatile uint8_t tx_count;
+    uint16_t tx_len[LINK_TX_QUEUE_DEPTH];
+    uint8_t tx_data[LINK_TX_QUEUE_DEPTH][LINK_COBS_MAX];
 } link_ctx_t;
 
 static link_ctx_t s_ctx[LINK_ID_MAX];
@@ -157,10 +165,46 @@ static HAL_StatusTypeDef link_send_encoded(link_ctx_t *ctx,
                                            const uint8_t *data,
                                            uint16_t len)
 {
-    HAL_StatusTypeDef st;
     if (!ctx || !ctx->huart || !data || len == 0u) return HAL_ERROR;
-    st = HAL_UART_Transmit(ctx->huart, (uint8_t *)data, len, LINK_UART_TX_TIMEOUT_MS);
-    return st;
+    if (len > LINK_COBS_MAX) return HAL_ERROR;
+
+    __disable_irq();
+    if (ctx->tx_count >= LINK_TX_QUEUE_DEPTH) {
+        __enable_irq();
+        return HAL_BUSY;
+    }
+    memcpy(ctx->tx_data[ctx->tx_tail], data, len);
+    ctx->tx_len[ctx->tx_tail] = len;
+    ctx->tx_tail = (uint8_t)((ctx->tx_tail + 1u) % LINK_TX_QUEUE_DEPTH);
+    ctx->tx_count++;
+    __enable_irq();
+    return HAL_OK;
+}
+
+static void link_kick_tx(link_ctx_t *ctx)
+{
+    HAL_StatusTypeDef st;
+    uint8_t head;
+    uint16_t len;
+
+    if (!ctx || !ctx->huart) return;
+
+    __disable_irq();
+    if (ctx->tx_busy || ctx->tx_count == 0u || ctx->huart->gState != HAL_UART_STATE_READY) {
+        __enable_irq();
+        return;
+    }
+    head = ctx->tx_head;
+    len = ctx->tx_len[head];
+    ctx->tx_busy = 1u;
+    __enable_irq();
+
+    st = HAL_UART_Transmit_IT(ctx->huart, ctx->tx_data[head], len);
+    if (st != HAL_OK) {
+        __disable_irq();
+        ctx->tx_busy = 0u;
+        __enable_irq();
+    }
 }
 
 static HAL_StatusTypeDef link_send_frame(link_id_t link_id,
@@ -209,6 +253,7 @@ static HAL_StatusTypeDef link_send_frame(link_id_t link_id,
         LinkDiag_PushFault(link_id, FAULT_SEV_ERROR, LINK_ERR_UART_IO, seq, msg_type, 0u, 0u);
         return st;
     }
+    link_kick_tx(ctx);
 
     if (cache_response) {
         ctx->last_resp_valid = 1u;
@@ -618,10 +663,58 @@ void LinkProto_RxByte(link_id_t link_id, uint8_t byte)
 
 void LinkProto_UartError(link_id_t link_id)
 {
+    link_ctx_t *ctx;
+
     if (!valid_link(link_id)) return;
+    ctx = &s_ctx[link_id];
+
+    __disable_irq();
+    ctx->tx_busy = 0u;
+    ctx->tx_head = 0u;
+    ctx->tx_tail = 0u;
+    ctx->tx_count = 0u;
+    __enable_irq();
+
     LinkDiag_IncUartErr(link_id);
     LinkDiag_Count(link_id, LINK_ERR_UART_IO);
     LinkDiag_PushFault(link_id, FAULT_SEV_ERROR, LINK_ERR_UART_IO, 0u, 0u, 0u, 0u);
+}
+
+HAL_StatusTypeDef LinkProto_SendRaw(link_id_t link_id, const uint8_t *data, uint16_t len)
+{
+    link_ctx_t *ctx;
+    HAL_StatusTypeDef st;
+
+    if (!valid_link(link_id) || !data || len == 0u) return HAL_ERROR;
+    ctx = &s_ctx[link_id];
+    if (!ctx->huart) return HAL_ERROR;
+
+    st = link_send_encoded(ctx, data, len);
+    if (st == HAL_OK) {
+        link_kick_tx(ctx);
+    }
+    return st;
+}
+
+void LinkProto_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    int link_id;
+
+    if (!huart) return;
+
+    for (link_id = 0; link_id < LINK_ID_MAX; ++link_id) {
+        link_ctx_t *ctx = &s_ctx[link_id];
+        if (ctx->huart != huart) continue;
+
+        __disable_irq();
+        if (ctx->tx_count > 0u) {
+            ctx->tx_head = (uint8_t)((ctx->tx_head + 1u) % LINK_TX_QUEUE_DEPTH);
+            ctx->tx_count--;
+        }
+        ctx->tx_busy = 0u;
+        __enable_irq();
+        link_kick_tx(ctx);
+    }
 }
 
 void LinkProto_Poll(link_id_t link_id,
@@ -650,6 +743,7 @@ void LinkProto_Poll(link_id_t link_id,
 
     ctx = &s_ctx[link_id];
     if (!ctx->huart) return;
+    link_kick_tx(ctx);
     if (!ctx->rx_packet_ready) return;
 
     __disable_irq();

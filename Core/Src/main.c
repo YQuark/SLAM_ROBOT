@@ -39,6 +39,7 @@
 #include "pc_link.h"
 #include "ssd1306.h"
 #include "encoder.h"
+#include "link_proto.h"
 #include "link_diag.h"
 
 #include "robot_config.h"
@@ -172,21 +173,6 @@ static void USART_SendString(const char *s)
 static uint8_t System_IsCriticalPathBusy(void)
 {
   return (s_ctrl_pending > 0u) ? 1u : 0u;
-}
-
-static const char *IMU_CalibFailReasonToString(IMU_CalibFailReason_t reason)
-{
-  switch (reason) {
-    case IMU_CALIB_FAIL_ACCEL:
-      return "ACCEL_NORM";
-    case IMU_CALIB_FAIL_GYRO:
-      return "GYRO_RATE";
-    case IMU_CALIB_FAIL_BOTH:
-      return "ACCEL_AND_GYRO";
-    case IMU_CALIB_FAIL_NONE:
-    default:
-      return "NONE";
-  }
 }
 
 static void I2C1_Scan(void)
@@ -822,33 +808,18 @@ int main(void)
     if (now - last_imu >= IMU_READ_INTERVAL_MS) {
       last_imu = now;
       if (imu_ready && MPU6050_ReadRaw(&imu_data) == HAL_OK) {
-        static uint32_t last_imu_diag_ms = 0u;
         MPU6050_Convert(&imu_data);
         RobotControl_UpdateIMU(&imu_data, 1, now);
 
         /* 检查IMU校准状态 */
         static IMU_CalibState_t last_calib_state = IMU_CALIB_IDLE;
         IMU_CalibState_t calib_state = Attitude_GetCalibState();
-        if ((calib_state == IMU_CALIB_RUNNING || calib_state == IMU_CALIB_FAILED) &&
-            (now - last_imu_diag_ms >= 500u)) {
-          last_imu_diag_ms = now;
-          IMU_PrintRawDebug(&imu_data);
-        }
         if (calib_state != last_calib_state) {
           last_calib_state = calib_state;
           if (calib_state == IMU_CALIB_DONE) {
             USART_SendString("IMU calibration completed!\r\n");
           } else if (calib_state == IMU_CALIB_FAILED) {
-            char calib_dbg[160];
-            float accel_norm = 0.0f;
-            float gyro_abs = 0.0f;
-            int calib_n;
-            Attitude_GetCalibDebug(&accel_norm, &gyro_abs);
-            calib_n = snprintf(calib_dbg, sizeof(calib_dbg),
-                               "IMU calibration FAILED - reason=%s |a|=%.3f |gyro|sum=%.2f\r\n",
-                               IMU_CalibFailReasonToString(Attitude_GetCalibFailReason()),
-                               accel_norm, gyro_abs);
-            HAL_UART_Transmit(&huart1, (uint8_t*)calib_dbg, calib_n, 100);
+            USART_SendString("IMU calibration FAILED\r\n");
           }
         }
       } else {
@@ -898,20 +869,7 @@ int main(void)
             (now - last_ctrl_dbg >= CTRL_DEBUG_INTERVAL_MS) &&
             !System_IsCriticalPathBusy()) {
           last_ctrl_dbg = now;
-          const RobotControlState_t *state = RobotControl_GetState();
-          uint16_t ccr[4];
-          uint8_t dir[4];
-          char dbg[320];
-          motor_get_debug(ccr, dir);
-          int n = snprintf(dbg, sizeof(dbg),
-                           "Mode=%d Src=%d v=%.2f w=%.2f | Enc L1:%.0f L2:%.0f R1:%.0f R2:%.0f | Out L1:%.2f L2:%.2f R1:%.2f R2:%.2f | CCR %u,%u,%u,%u | DIR %u,%u,%u,%u\r\n",
-                           RobotControl_GetMode(), state->src,
-                           state->v_cmd, state->w_cmd,
-                           state->meas_cps[0], state->meas_cps[1], state->meas_cps[2], state->meas_cps[3],
-                           state->u_out[0], state->u_out[1], state->u_out[2], state->u_out[3],
-                           ccr[0], ccr[1], ccr[2], ccr[3],
-                           dir[0], dir[1], dir[2], dir[3]);
-          HAL_UART_Transmit(&huart1, (uint8_t*)dbg, n, 100);
+          /* 运行期禁止在控制链路中做阻塞串口打印。 */
         }
       }
     }
@@ -932,55 +890,8 @@ int main(void)
     if (TELEMETRY_ENABLE &&
         (now - last_telemetry >= TELEMETRY_INTERVAL_MS) &&
         !System_IsCriticalPathBusy()) {
-      const RobotControlState_t *state = RobotControl_GetState();
-      const Attitude_t *att = Attitude_GetData();
-      char buf[400];
-      int32_t ax_mg = imu_ready ? (int32_t)(imu_data.ax_g * 1000.0f) : 0;
-      int32_t ay_mg = imu_ready ? (int32_t)(imu_data.ay_g * 1000.0f) : 0;
-      int32_t az_mg = imu_ready ? (int32_t)(imu_data.az_g * 1000.0f) : 0;
-      int32_t gx_cdps = imu_ready ? (int32_t)(imu_data.gx_dps * 100.0f) : 0;
-      int32_t gy_cdps = imu_ready ? (int32_t)(imu_data.gy_dps * 100.0f) : 0;
-      int32_t gz_cdps = imu_ready ? (int32_t)(imu_data.gz_dps * 100.0f) : 0;
-      int32_t enc0 = (int32_t)state->meas_cps[0];
-      int32_t enc1 = (int32_t)state->meas_cps[1];
-      int32_t enc2 = (int32_t)state->meas_cps[2];
-      int32_t enc3 = (int32_t)state->meas_cps[3];
-      int32_t v_x1000 = (int32_t)(state->v_cmd * 1000.0f);
-      int32_t w_x1000 = (int32_t)(state->w_cmd * 1000.0f);
-      int32_t u0_x1000 = (int32_t)(state->u_out[0] * 1000.0f);
-      int32_t u1_x1000 = (int32_t)(state->u_out[1] * 1000.0f);
-      int32_t u2_x1000 = (int32_t)(state->u_out[2] * 1000.0f);
-      int32_t u3_x1000 = (int32_t)(state->u_out[3] * 1000.0f);
-      uint16_t vbat_mv = (batt.voltage > 0.0f) ? (uint16_t)(batt.voltage * 1000.0f + 0.5f) : 0u;
-      uint16_t pct_x10 = (batt.percent > 0.0f) ? (uint16_t)(batt.percent * 10.0f + 0.5f) : 0u;
-
-      /* 姿态数据 (度 x 100) */
-      int32_t roll_x100 = att->valid ? (int32_t)(att->roll * 100.0f) : 0;
-      int32_t pitch_x100 = att->valid ? (int32_t)(att->pitch * 100.0f) : 0;
-      int32_t yaw_x100 = att->valid ? (int32_t)(att->yaw * 100.0f) : 0;
-
       last_telemetry = now;
-
-      /* VOFA+ FireWater: pure numeric CSV for plotting */
-      /* 新增: roll_x100, pitch_x100, yaw_x100, enc_fault_mask */
-      n = snprintf(buf, sizeof(buf),
-                   "%lu,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%u,%u,%u\r\n",
-                   (unsigned long)now,
-                   (unsigned int)state->imu_valid,
-                   (unsigned int)state->imu_accel_valid,
-                   (long)ax_mg, (long)ay_mg, (long)az_mg,
-                   (long)gx_cdps, (long)gy_cdps, (long)gz_cdps,
-                   (long)enc0, (long)enc1, (long)enc2, (long)enc3,
-                   (long)v_x1000, (long)w_x1000,
-                   (long)u0_x1000, (long)u1_x1000, (long)u2_x1000, (long)u3_x1000,
-                   (long)roll_x100, (long)pitch_x100, (long)yaw_x100,
-                   (unsigned int)vbat_mv, (unsigned int)pct_x10,
-                   (unsigned int)state->enc_fault_mask);
-      if (n > 0) {
-        uint16_t tx_len = (uint16_t)((n < (int)sizeof(buf)) ? n : ((int)sizeof(buf) - 1));
-        HAL_UART_Transmit(&huart1, (uint8_t*)buf, tx_len, 100);
-        RobotControl_ReportTelemetry(now);
-      }
+      RobotControl_ReportTelemetry(now);
     }
 
     Safety_WatchdogFeed();
@@ -1046,6 +957,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
+  LinkProto_UART_TxCpltCallback(huart);
   PC_Link_UART_TxCpltCallback(huart);
 }
 

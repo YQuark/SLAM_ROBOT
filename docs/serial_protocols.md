@@ -64,15 +64,22 @@ From `Core/Inc/Drivers/robot_config.h`:
 
 ## Host Odom Contract
 
-The current odometry contract is encoder-dominated.
+The current odometry contract is:
 
-- Primary odometry source: encoder-derived `v_est` and `w_est`
-- Heading assist: fused `yaw_est` and bias-corrected `gz`
-- IMU heading gating: host must check `imu_valid` before trusting IMU-assisted heading data
-- IMU acceleration gating: host must check `imu_accel_valid` before using any acceleration-derived quantity
-- Accelerometer policy: raw acceleration is debug-only and must not be integrated into host odometry at this stage
+- Translation feedback: firmware-side `v_est` and `w_est`
+- Heading feedback: firmware-side fused `yaw_est`
+- Gyro auxiliary term: bias-corrected `gz`
+- Accelerometer data: debug-only, not for host translation integration
 
-This means the host should integrate wheel motion as the primary source and use IMU only to stabilize heading, not to estimate translation.
+Hard rules for the host:
+
+- The host should use `v_est` and `w_est` as the primary motion feedback terms exposed by the MCU.
+- The host should prefer `yaw_est` over integrating raw `gz` by itself.
+- The host must check `imu_valid` before treating `yaw_est` / `gz` as high-confidence IMU-assisted heading data.
+- The host must check `imu_accel_valid` before trusting any acceleration-derived quantity.
+- The host must not integrate `raw_accel_mg[3]` into odometry at this stage.
+
+This contract is meant to make upper-layer mapping and navigation consume the same motion interpretation that the firmware itself uses internally.
 
 ## Binary Framed Protocol
 
@@ -182,6 +189,13 @@ Notes:
 - `imu_accel_valid` means accelerometer data passed static calibration and current runtime gating.
 - `cmd_semantics`: `0=none`, `1=velocity`, `2=raw_left_right`
 - `raw_left_q15` / `raw_right_q15` are meaningful only when `cmd_semantics=2`
+
+Host bridge interpretation:
+
+- `v_est_q15` and `w_est_q15` should be decoded into physical units using the host-side `max_linear` and `max_angular` parameters.
+- `yaw_est_x100_deg` should be treated as the MCU's preferred heading output.
+- `gz_dps_x10` is useful for IMU messages, damping, and diagnostics, but is not a replacement for `yaw_est_x100_deg`.
+- `raw_accel_mg[3]` is included so the host can inspect IMU axis orientation and health, not to estimate planar displacement.
 
 ### `SET_DRIVE` `0x10`
 
@@ -364,6 +378,28 @@ ASCII odom consumer notes:
 - `raw_ax_mg`, `raw_ay_mg`, and `raw_az_mg` are transmitted only for diagnosis.
 - If IMU calibration is incomplete or invalid, `imu_valid=0` and `gz_bias_cdps=0`.
 - If the accelerometer fails static calibration or later runtime gating, `imu_accel_valid=0` even when `imu_valid=1`.
+
+## ROS2 Bridge Alignment
+
+The current upper-machine bridge implementation is `Ros2_Slam/src/stm32_robot_bridge/stm32_robot_bridge/bridge_node.py`.
+
+Its current actual behavior is:
+
+- `/cmd_vel` is encoded into `SET_DRIVE`
+- startup and probing use `GET_STATUS`
+- `GET_STATUS` is the primary status source
+- `/odom.twist` uses `v_est_q15` and `w_est_q15`
+- `/odom.pose` integrates the bridge's own `(x, y, yaw)` state
+- when `use_status_yaw=true`, the bridge snaps its internal `yaw` to `yaw_est_x100_deg` on each fresh status frame
+- when `use_status_yaw=false` (current default), the bridge still uses `v_est/w_est`, but `yaw` continues by integrating `w_est`
+- `/imu/data.orientation` uses `yaw_est_x100_deg` only when `feedback_imu_valid` is true
+- `/imu/data.angular_velocity.z` uses bias-corrected `gz`
+- `/imu/data.linear_acceleration` uses `raw_accel_mg[3]` converted to SI units
+
+Implication:
+
+- If the host wants the MCU heading to directly shape odometry heading, it must explicitly set `use_status_yaw=true`.
+- If `use_status_yaw=false`, the bridge is still using MCU `v_est/w_est`, but not fully trusting MCU `yaw_est` for `/odom.pose`.
 
 ## ESP01S HTTP Bridge Contract
 

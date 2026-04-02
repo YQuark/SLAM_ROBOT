@@ -60,6 +60,8 @@ enum {
 void LinkProto_Init(link_id_t link_id, UART_HandleTypeDef *huart);
 void LinkProto_RxByte(link_id_t link_id, uint8_t byte);
 void LinkProto_UartError(link_id_t link_id);
+HAL_StatusTypeDef LinkProto_SendRaw(link_id_t link_id, const uint8_t *data, uint16_t len);
+void LinkProto_UART_TxCpltCallback(UART_HandleTypeDef *huart);
 void LinkProto_Poll(link_id_t link_id,
                     const BatteryStatus_t *batt,
                     const MPU6050_Data_t *imu);

@@ -194,6 +194,27 @@ cmake --build --preset Debug
 - `battery_mv`
 - `battery_pct_x10`
 
+### 当前上位机对接建议
+
+如果上位机使用 `Ros2_Slam/src/stm32_robot_bridge`，当前应按下面这条契约理解下位机数据：
+
+- 平移速度来源：`v_est_q15`
+- 角速度来源：`w_est_q15`
+- 航向来源：`yaw_est_x100_deg`
+- 陀螺辅助：`gz_dps_x10`
+- IMU 置信标志：`imu_valid`
+- 加速度置信标志：`imu_accel_valid`
+- 轮速诊断：`enc_vel_cps[4]`
+- 故障诊断：`enc_fault_mask`
+
+对接边界要点：
+
+- `v_est / w_est` 是下位机基于底盘几何参数和编码器速度估计出的底盘运动量，适合做底盘反馈和 odom 速度输入。
+- `yaw_est` 是下位机当前用于控制与状态回报的融合航向，优先级高于上位机自己积分原始 `gz`。
+- `raw_accel_mg[3]` 和 ASCII `TEL` 里的原始加速度目前只用于调试，不应用于上位机平移积分。
+- `imu_valid=0` 时，上位机不应把 `yaw_est` 当成高可信 IMU 航向使用。
+- `enc_fault_mask != 0` 时，上位机应把底盘里程计视为异常状态，并触发诊断或安全处理。
+
 ### USART3 ASCII 控制台
 
 支持命令：
@@ -234,6 +255,12 @@ cmake --build --preset Debug
 - `imu_ok`
 - `imu_acc_ok`
 - `enc_fault`
+
+ASCII 状态流和正式对接的关系：
+
+- `STATUS` 和 `TEL` 主要用于串口调试、人工观察和快速校验字段含义。
+- 正式上下位机衔接优先使用 `GET_STATUS` 二进制状态包，而不是长期依赖 ASCII `TEL`。
+- 如果临时用 ASCII 做调试桥接，至少应取 `v_est_x1000`、`w_est_x1000`、`yaw_x100`、`gz_cdps`、`imu_ok`、`imu_acc_ok`、`enc_fault` 这些字段，不要自行猜测列顺序。
 
 ## ESP-01S 桥接
 

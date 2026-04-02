@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "i2c.h"
+#include "robot_config.h"
 #include "usart.h"
 
 #define DEG2RAD 0.0174532925f
@@ -24,6 +25,7 @@ static float s_mahony_iz = 0.0f;
 static IMU_CalibFailReason_t s_calib_fail_reason = IMU_CALIB_FAIL_NONE;
 static float s_last_calib_accel_norm = 0.0f;
 static float s_last_calib_gyro_abs = 0.0f;
+static uint8_t s_still_detected = 0u;
 
 static HAL_StatusTypeDef MPU6050_WriteReg(uint8_t reg, uint8_t value);
 static void Attitude_UpdateFromAccel(float ax, float ay, float az, float *roll, float *pitch);
@@ -36,6 +38,11 @@ static void RotateBodyToWorldByQuat(float qw, float qx, float qy, float qz,
 static void IntegrateGyroOnly(float gx_dps, float gy_dps, float gz_dps, float dt);
 static void MahonyUpdate(float gx_dps, float gy_dps, float gz_dps,
                          float ax, float ay, float az, float dt);
+static void MapSensorFrameToBody(float sx, float sy, float sz,
+                                 float *bx, float *by, float *bz);
+static float SelectSensorAxis(uint8_t axis, float sx, float sy, float sz);
+static uint8_t DetectStillness(float ax, float ay, float az, float gx, float gy, float gz);
+static float ClampFloat(float x, float lo, float hi);
 
 static HAL_StatusTypeDef MPU6050_WriteReg(uint8_t reg, uint8_t value)
 {
@@ -126,14 +133,25 @@ void MPU6050_Convert(MPU6050_Data_t *data)
 {
     const float accel_sens = 16384.0f;
     const float gyro_sens = 16.4f;
+    float sensor_ax_g;
+    float sensor_ay_g;
+    float sensor_az_g;
+    float sensor_gx_dps;
+    float sensor_gy_dps;
+    float sensor_gz_dps;
 
-    data->ax_g = data->ax_raw / accel_sens;
-    data->ay_g = data->ay_raw / accel_sens;
-    data->az_g = data->az_raw / accel_sens;
+    sensor_ax_g = data->ax_raw / accel_sens;
+    sensor_ay_g = data->ay_raw / accel_sens;
+    sensor_az_g = data->az_raw / accel_sens;
 
-    data->gx_dps = data->gx_raw / gyro_sens;
-    data->gy_dps = data->gy_raw / gyro_sens;
-    data->gz_dps = data->gz_raw / gyro_sens;
+    sensor_gx_dps = data->gx_raw / gyro_sens;
+    sensor_gy_dps = data->gy_raw / gyro_sens;
+    sensor_gz_dps = data->gz_raw / gyro_sens;
+
+    MapSensorFrameToBody(sensor_ax_g, sensor_ay_g, sensor_az_g,
+                         &data->ax_g, &data->ay_g, &data->az_g);
+    MapSensorFrameToBody(sensor_gx_dps, sensor_gy_dps, sensor_gz_dps,
+                         &data->gx_dps, &data->gy_dps, &data->gz_dps);
 
     data->temp_c = (float)data->temp_raw / 340.0f + 36.53f;
 }
@@ -232,6 +250,7 @@ void Attitude_Init(void)
     s_calib_fail_reason = IMU_CALIB_FAIL_NONE;
     s_last_calib_accel_norm = 0.0f;
     s_last_calib_gyro_abs = 0.0f;
+    s_still_detected = 0u;
 }
 
 void Attitude_StartCalibration(void)
@@ -275,6 +294,57 @@ static void Attitude_UpdateFromAccel(float ax, float ay, float az, float *roll, 
 {
     *roll = atan2f(ay, az) * RAD2DEG;
     *pitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * RAD2DEG;
+}
+
+static void MapSensorFrameToBody(float sx, float sy, float sz,
+                                 float *bx, float *by, float *bz)
+{
+    if (bx) {
+        *bx = IMU_BODY_X_SIGN * SelectSensorAxis(IMU_BODY_X_FROM_SENSOR_Y, sx, sy, sz);
+    }
+    if (by) {
+        *by = IMU_BODY_Y_SIGN * SelectSensorAxis(IMU_BODY_Y_FROM_SENSOR_Z, sx, sy, sz);
+    }
+    if (bz) {
+        *bz = IMU_BODY_Z_SIGN * SelectSensorAxis(IMU_BODY_Z_FROM_SENSOR_X, sx, sy, sz);
+    }
+}
+
+static float SelectSensorAxis(uint8_t axis, float sx, float sy, float sz)
+{
+    switch (axis) {
+    case 0u:
+        return sx;
+    case 1u:
+        return sy;
+    case 2u:
+        return sz;
+    default:
+        return 0.0f;
+    }
+}
+
+static uint8_t DetectStillness(float ax, float ay, float az, float gx, float gy, float gz)
+{
+    const float accel_norm = sqrtf(ax * ax + ay * ay + az * az);
+    const float gyro_abs = fabsf(gx) + fabsf(gy) + fabsf(gz);
+    const float accel_err = fabsf(accel_norm - 1.0f);
+
+    if (accel_err <= IMU_STILL_ACCEL_ERR_G && gyro_abs <= IMU_STILL_GYRO_DPS) {
+        return 1u;
+    }
+    return 0u;
+}
+
+static float ClampFloat(float x, float lo, float hi)
+{
+    if (x < lo) {
+        return lo;
+    }
+    if (x > hi) {
+        return hi;
+    }
+    return x;
 }
 
 static void EulerToQuaternion(float roll, float pitch, float yaw, float *qw, float *qx, float *qy, float *qz)
@@ -564,6 +634,23 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
     ax = imu->ax_g - s_attitude.accel_bias_x;
     ay = imu->ay_g - s_attitude.accel_bias_y;
     az = imu->az_g - s_attitude.accel_bias_z;
+
+    s_still_detected = DetectStillness(ax, ay, az, gx, gy, gz);
+    if (s_still_detected) {
+        const float bias_step = ClampFloat(IMU_GYRO_BIAS_ADAPT_RATE * dt, 0.0f, 1.0f);
+        s_attitude.gyro_bias_x += (imu->gx_dps - s_attitude.gyro_bias_x) * bias_step;
+        s_attitude.gyro_bias_y += (imu->gy_dps - s_attitude.gyro_bias_y) * bias_step;
+        s_attitude.gyro_bias_z += (imu->gz_dps - s_attitude.gyro_bias_z) * bias_step;
+
+        gx = imu->gx_dps - s_attitude.gyro_bias_x;
+        gy = imu->gy_dps - s_attitude.gyro_bias_y;
+        gz = imu->gz_dps - s_attitude.gyro_bias_z;
+    }
+
+    if (fabsf(gz) <= IMU_GZ_DEADBAND_DPS) {
+        gz = 0.0f;
+    }
+
     accel_magnitude = sqrtf(ax * ax + ay * ay + az * az);
     accel_trustworthy = s_attitude.accel_valid ? 1u : 0u;
     if (fabsf(ax) >= IMU_ACCEL_AXIS_SAT_G ||

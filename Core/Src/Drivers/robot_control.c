@@ -9,6 +9,9 @@
 #include <string.h>
 #include "stm32f4xx_hal.h"
 
+#define TWO_PI_F 6.28318530718f
+#define RAD_TO_DEG_F 57.2957795131f
+
 /* ---------------- PI 控制器 ---------------- */
 typedef struct {
     float kp;
@@ -51,6 +54,7 @@ static float s_yaw_imu = 0.0f;
 static float s_yaw_hold_ref = 0.0f;
 static float s_yaw_hold_i = 0.0f;
 static uint8_t s_yaw_hold_active = 0;
+static float s_yaw_encoder_weight = YAW_FUSION_ALPHA;
 
 static float s_v_ref_filt = 0.0f;
 static float s_w_ref_filt = 0.0f;
@@ -120,6 +124,40 @@ static inline float side_gain_right(void)
     return clampf(1.0f - STRAIGHT_SIDE_TRIM, 0.5f, 1.5f);
 }
 
+static inline float cps_to_wheel_linear_mps(float cps)
+{
+    return cps * (TWO_PI_F * DIFF_WHEEL_RADIUS_M / ENCODER_COUNTS_PER_REV);
+}
+
+static inline float wheel_linear_mps_to_cps(float linear_mps)
+{
+    return linear_mps * (ENCODER_COUNTS_PER_REV / (TWO_PI_F * DIFF_WHEEL_RADIUS_M));
+}
+
+static inline float chassis_max_linear_mps(void)
+{
+    return cps_to_wheel_linear_mps(MAX_CPS);
+}
+
+static inline float chassis_max_angular_radps(void)
+{
+    return (2.0f * chassis_max_linear_mps()) / DIFF_TRACK_WIDTH_M;
+}
+
+static inline float normalize_linear_mps(float linear_mps)
+{
+    const float max_linear = chassis_max_linear_mps();
+    if (max_linear <= 1e-6f) return 0.0f;
+    return clampf(linear_mps / max_linear, -1.0f, 1.0f);
+}
+
+static inline float normalize_angular_radps(float angular_radps)
+{
+    const float max_angular = chassis_max_angular_radps();
+    if (max_angular <= 1e-6f) return 0.0f;
+    return clampf(angular_radps / max_angular, -1.0f, 1.0f);
+}
+
 static float PI_Update_AW(PI_Controller_t *pi, float err, float ff, float dt)
 {
     float u_unsat = pi->kp * err + pi->integral + ff;
@@ -156,6 +194,7 @@ static void reset_runtime_states(void)
     s_yaw_hold_ref = 0.0f;
     s_yaw_hold_i = 0.0f;
     s_yaw_hold_active = 0;
+    s_yaw_encoder_weight = YAW_FUSION_ALPHA;
     for (int i = 0; i < 4; ++i) {
         s_last_u[i] = 0.0f;
         s_start_assist_ticks[i] = 0u;
@@ -478,14 +517,19 @@ static void choose_cmd(uint32_t now_ms, float *v, float *w, cmd_source_t *src)
 
 static void update_observer(float dt)
 {
+    const Attitude_t *att = Attitude_GetData();
     float meas_l = 0.5f * (g_encoders[ENC_L1].vel_cps + g_encoders[ENC_L2].vel_cps);
     float meas_r = 0.5f * (g_encoders[ENC_R1].vel_cps + g_encoders[ENC_R2].vel_cps);
-    float v_est = 0.5f * (meas_l + meas_r) / MAX_CPS;
-    float w_est = 0.5f * (meas_r - meas_l) / MAX_CPS;
-    float yaw_rate_dps = w_est * YAW_ENC_DPS_SCALE;
+    float vel_l_mps = cps_to_wheel_linear_mps(meas_l);
+    float vel_r_mps = cps_to_wheel_linear_mps(meas_r);
+    float v_est_mps = 0.5f * (vel_l_mps + vel_r_mps);
+    float w_est_radps = (vel_r_mps - vel_l_mps) / DIFF_TRACK_WIDTH_M;
+    float yaw_rate_dps = w_est_radps * RAD_TO_DEG_F;
+    float imu_yaw_rate_dps = 0.0f;
+    float target_encoder_weight = YAW_FUSION_ALPHA;
 
-    s_st.v_est = v_est;
-    s_st.w_est = w_est;
+    s_st.v_est = normalize_linear_mps(v_est_mps);
+    s_st.w_est = normalize_angular_radps(w_est_radps);
 
     /* 编码器侧航向估计必须先转换到角速度量纲，再做积分。 */
     s_yaw_enc += yaw_rate_dps * dt;
@@ -493,12 +537,22 @@ static void update_observer(float dt)
 
     /* 使用姿态融合后的yaw角 */
     if (s_st.imu_enabled && s_st.imu_valid) {
+        imu_yaw_rate_dps = s_imu_last.gz_dps - att->gyro_bias_z;
+        if (fabsf(v_est_mps) >= YAW_SLIP_MIN_LINEAR_MPS &&
+            fabsf(yaw_rate_dps - imu_yaw_rate_dps) > YAW_SLIP_RATE_ERR_DPS) {
+            target_encoder_weight = YAW_FUSION_SLIP_ALPHA;
+        }
+        s_yaw_encoder_weight = slew_limit(s_yaw_encoder_weight,
+                                          target_encoder_weight,
+                                          YAW_SLIP_RECOVER_RATE,
+                                          dt);
         /* s_yaw_imu 已在 RobotControl_UpdateIMU 中通过 Attitude_Update 更新 */
         /* 使用互补融合: 编码器权重 YAW_FUSION_ALPHA */
         s_st.yaw_est = wrap_angle_deg(
-            YAW_FUSION_ALPHA * s_yaw_enc + (1.0f - YAW_FUSION_ALPHA) * s_yaw_imu);
+            s_yaw_encoder_weight * s_yaw_enc + (1.0f - s_yaw_encoder_weight) * s_yaw_imu);
     } else {
         /* 无IMU时仅使用编码器积分 */
+        s_yaw_encoder_weight = YAW_FUSION_ALPHA;
         s_st.yaw_est = s_yaw_enc;
     }
 }
@@ -669,6 +723,14 @@ void RobotControl_Update(float dt, uint32_t now_ms)
     {
         float v_ref = s_v_ref_filt;
         float w_ref = s_w_ref_filt;
+        float heading_for_hold = s_st.imu_valid ? s_yaw_imu : s_st.yaw_est;
+        float imu_gz_dps = 0.0f;
+        const float max_linear_mps = chassis_max_linear_mps();
+        const float max_angular_radps = chassis_max_angular_radps();
+        float v_ref_mps;
+        float w_ref_radps;
+        float left_ref_mps;
+        float right_ref_mps;
 
         s_st.v_cmd = v_cmd;
         s_st.w_cmd = w_cmd;
@@ -681,18 +743,32 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         if (fabsf(v_ref) >= YAW_HOLD_V_MIN && fabsf(w_cmd) < YAW_HOLD_W_THRESH) {
             float yaw_err;
             float yaw_corr;
+            float yaw_rate_term = 0.0f;
+            float yaw_err_norm;
             if (!s_yaw_hold_active) {
-                s_yaw_hold_ref = s_st.yaw_est;
+                s_yaw_hold_ref = heading_for_hold;
                 s_yaw_hold_i = 0.0f;
                 s_yaw_hold_active = 1u;
             }
-            yaw_err = wrap_angle_deg(s_yaw_hold_ref - s_st.yaw_est);
-            s_yaw_hold_i += YAW_HOLD_KI * (yaw_err / 180.0f) * dt;
+            yaw_err = wrap_angle_deg(s_yaw_hold_ref - heading_for_hold);
+            if (fabsf(yaw_err) < YAW_HOLD_ERR_DEADBAND_DEG) {
+                yaw_err = 0.0f;
+            }
+            yaw_err_norm = clampf(yaw_err / YAW_HOLD_ERR_FULL_SCALE_DEG, -1.0f, 1.0f);
+            if (s_st.imu_valid) {
+                const Attitude_t *yaw_att = Attitude_GetData();
+                imu_gz_dps = s_imu_last.gz_dps - yaw_att->gyro_bias_z;
+                yaw_rate_term = YAW_HOLD_KD *
+                                clampf(imu_gz_dps / IMU_W_DPS_SCALE, -1.0f, 1.0f);
+            } else {
+                yaw_rate_term = YAW_HOLD_KD * clampf(s_st.w_est, -1.0f, 1.0f);
+            }
+            s_yaw_hold_i += YAW_HOLD_KI * yaw_err_norm * dt;
             s_yaw_hold_i = clampf(s_yaw_hold_i, -YAW_HOLD_I_LIM, YAW_HOLD_I_LIM);
-            yaw_corr = YAW_HOLD_KP * (yaw_err / 180.0f) + s_yaw_hold_i;
+            yaw_corr = YAW_HOLD_KP * yaw_err_norm + s_yaw_hold_i - yaw_rate_term;
             w_ref += clampf(yaw_corr, -YAW_HOLD_W_LIM, YAW_HOLD_W_LIM);
         } else {
-            s_yaw_hold_ref = s_st.yaw_est;
+            s_yaw_hold_ref = heading_for_hold;
             s_yaw_hold_i = 0.0f;
             s_yaw_hold_active = 0u;
         }
@@ -722,9 +798,14 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         s_straight_i_w = 0.0f;
 #endif
 
-        ref_cps[ENC_L1] = clampf(v_ref - w_ref, -1.0f, 1.0f) * MAX_CPS;
+        v_ref_mps = clampf(v_ref, -1.0f, 1.0f) * max_linear_mps;
+        w_ref_radps = clampf(w_ref, -1.0f, 1.0f) * max_angular_radps;
+        left_ref_mps = v_ref_mps - (0.5f * w_ref_radps * DIFF_TRACK_WIDTH_M);
+        right_ref_mps = v_ref_mps + (0.5f * w_ref_radps * DIFF_TRACK_WIDTH_M);
+
+        ref_cps[ENC_L1] = clampf(wheel_linear_mps_to_cps(left_ref_mps), -MAX_CPS, MAX_CPS);
         ref_cps[ENC_L2] = ref_cps[ENC_L1];
-        ref_cps[ENC_R1] = clampf(v_ref + w_ref, -1.0f, 1.0f) * MAX_CPS;
+        ref_cps[ENC_R1] = clampf(wheel_linear_mps_to_cps(right_ref_mps), -MAX_CPS, MAX_CPS);
         ref_cps[ENC_R2] = ref_cps[ENC_R1];
 
         ref_cps[ENC_L1] *= side_gain_left();

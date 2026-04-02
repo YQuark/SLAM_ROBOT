@@ -63,6 +63,21 @@
 /* 归一化目标速度 1.0 对应的 counts/s（用于把 v,w 映射到编码器目标） */
 #define MAX_CPS               13800.0f
 
+/* ======== 差速底盘几何参数 ======== */
+/* 当前上位机协议仍使用归一化 v/w 语义；这里给出显式几何参数，用于统一运动学推导。 */
+#define DIFF_WHEEL_RADIUS_M       0.0325f
+#define DIFF_TRACK_WIDTH_M        0.1250f
+#define ENCODER_COUNTS_PER_REV    2340.0f
+
+/* ======== IMU 安装轴映射 ======== */
+/* 当前 MPU6050 模块垂直安装在主控板侧边，静止数据表明车体竖直轴对应传感器 +X。 */
+#define IMU_BODY_X_FROM_SENSOR_Y   1u
+#define IMU_BODY_Y_FROM_SENSOR_Z   2u
+#define IMU_BODY_Z_FROM_SENSOR_X   0u
+#define IMU_BODY_X_SIGN            1.0f
+#define IMU_BODY_Y_SIGN            1.0f
+#define IMU_BODY_Z_SIGN            1.0f
+
 /* ======== 四轮 PI 参数（初值，实车调） ======== */
 #define PI_INT_LIM              1.0f
 
@@ -97,30 +112,36 @@
 #define OUTER_INT_LIM            0.40f
 
 /* ======== IMU / yaw fusion ======== */
-#define YAW_FUSION_ALPHA         0.25f      /* 0..1, higher=encoder dominated */
-#define YAW_ENC_DPS_SCALE      180.0f      /* encoder-derived normalized w_est to deg/s */
+#define YAW_FUSION_ALPHA         0.05f      /* 0..1, higher=encoder dominated */
+#define YAW_FUSION_SLIP_ALPHA    0.005f     /* encoder weight when slip is detected */
+#define YAW_SLIP_MIN_LINEAR_MPS  0.08f
+#define YAW_SLIP_RATE_ERR_DPS   18.0f
+#define YAW_SLIP_RECOVER_RATE    2.0f       /* weight recovery rate (1/s) */
 #define IMU_W_DPS_SCALE         180.0f      /* dps that maps to w=1.0 */
-#define YAW_HOLD_KP              1.20f
-#define YAW_HOLD_KI              0.70f
+#define YAW_HOLD_KP              1.80f
+#define YAW_HOLD_KI              0.85f
+#define YAW_HOLD_KD              0.30f
+#define YAW_HOLD_ERR_FULL_SCALE_DEG 20.0f
 #define YAW_HOLD_I_LIM           0.18f
+#define YAW_HOLD_ERR_DEADBAND_DEG 0.35f
 #define YAW_HOLD_W_THRESH        0.06f
-#define YAW_HOLD_V_MIN           0.08f
-#define YAW_HOLD_W_LIM           0.28f
+#define YAW_HOLD_V_MIN           0.05f
+#define YAW_HOLD_W_LIM           0.42f
 
 /* ======== Straight-line balance ======== */
 /* 直行时根据左右编码器速度差做小幅差速补偿，抑制底盘天然跑偏。 */
 #define CTRL_USE_STRAIGHT_BALANCE  0u
-#define STRAIGHT_BALANCE_V_MIN    0.10f
-#define STRAIGHT_BALANCE_W_THRESH 0.05f
-#define STRAIGHT_BALANCE_KP       1.40f
-#define STRAIGHT_BALANCE_KI       0.45f
-#define STRAIGHT_BALANCE_I_LIM    0.10f
-#define STRAIGHT_BALANCE_W_LIM    0.26f
+#define STRAIGHT_BALANCE_V_MIN    0.06f
+#define STRAIGHT_BALANCE_W_THRESH 0.08f
+#define STRAIGHT_BALANCE_KP       1.60f
+#define STRAIGHT_BALANCE_KI       0.55f
+#define STRAIGHT_BALANCE_I_LIM    0.12f
+#define STRAIGHT_BALANCE_W_LIM    0.30f
 #define STRAIGHT_TRIM_W           0.000f
 
 /* ======== Side gain trim ======== */
 /* 车体直行固定向左偏时设为正，固定向右偏时设为负。 */
-#define STRAIGHT_SIDE_TRIM        0.06f
+#define STRAIGHT_SIDE_TRIM        0.00f
 
 /* ======== Wheel loop anti-windup / low-speed ======== */
 #define PI_AW_KAW                0.25f
@@ -140,6 +161,10 @@
 #define USE_IMU_DEFAULT          1u   /* 运行期仍可切换 */
 #define IMU_DAMP_ACTIVE_W      0.20f
 #define IMU_DAMP_K             0.008f /* w -= K * gz_dps */
+#define IMU_STILL_ACCEL_ERR_G  0.08f
+#define IMU_STILL_GYRO_DPS     1.20f
+#define IMU_GYRO_BIAS_ADAPT_RATE 0.35f /* 1/s, only when still */
+#define IMU_GZ_DEADBAND_DPS    0.10f
 
 /* ======== 指令仲裁 ======== */
 /* 指令超时：超过这个时间未更新则自动刹停（ms） */
