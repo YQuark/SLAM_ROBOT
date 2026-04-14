@@ -1,0 +1,21 @@
+{
+  "run_id": "2026-04-02-straight-line-drift-correction",
+  "stage": "deep_interview",
+  "goal": "reduce persistent left drift during long straight-line driving by enabling bounded real-time correction rather than relying only on fixed trim",
+  "deliverable": [
+    "straight-balance control activation",
+    "bounded parameter adjustments",
+    "build verification"
+  ],
+  "constraints": [
+    "do not change external protocols",
+    "keep the correction easy to roll back",
+    "do not claim final calibration without road test"
+  ],
+  "acceptance_criteria": [
+    "straight-line correction logic is active in firmware",
+    "build succeeds"
+  ],
+  "autonomy_mode": "interactive_governed",
+  "status": "completed"
+}

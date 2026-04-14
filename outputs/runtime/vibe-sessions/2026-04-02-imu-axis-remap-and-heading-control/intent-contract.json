@@ -1,0 +1,22 @@
+{
+  "run_id": "2026-04-02-imu-axis-remap-and-heading-control",
+  "stage": "deep_interview",
+  "goal": "fix the vertically mounted MPU6050 axis interpretation and switch straight-line heading control back to IMU-dominant behavior",
+  "deliverable": [
+    "body-frame IMU remap",
+    "IMU-dominant heading hold",
+    "removal of non-scientific straight-line compensation",
+    "build verification"
+  ],
+  "constraints": [
+    "do not change host protocols",
+    "keep wheel-speed PI intact",
+    "no final success claim without compile evidence"
+  ],
+  "acceptance_criteria": [
+    "mapped IMU data is used for attitude and control",
+    "build succeeds"
+  ],
+  "autonomy_mode": "interactive_governed",
+  "status": "completed"
+}

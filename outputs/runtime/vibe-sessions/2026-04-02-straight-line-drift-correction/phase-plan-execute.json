@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-04-02-straight-line-drift-correction",
+  "stage": "plan_execute",
+  "changes": [
+    {
+      "area": "straight_balance_activation",
+      "summary": "Enabled the straight-line balance loop so long-run drift is corrected by live wheel-difference feedback instead of relying only on static trim."
+    },
+    {
+      "area": "bounded_parameter_tuning",
+      "summary": "Lowered the entry threshold, widened the straight-driving recognition window, and moderately increased the straight-balance gains and output limit."
+    },
+    {
+      "area": "static_trim_adjustment",
+      "summary": "Raised STRAIGHT_SIDE_TRIM conservatively from 0.06 to 0.08 to bias against the observed persistent left drift."
+    }
+  ],
+  "verification": {
+    "build_command": "powershell.exe -Command \"& 'D:\\Program Files\\STM32CubeCLT_1.19.0\\CMake\\bin\\cmake.exe' --build 'D:\\Document\\Work\\projects\\Clion\\build\\Debug'\"",
+    "build_result": "passed"
+  },
+  "status": "completed"
+}

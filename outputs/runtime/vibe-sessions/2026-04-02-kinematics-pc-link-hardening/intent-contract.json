@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-04-02-kinematics-pc-link-hardening",
+  "stage": "deep_interview",
+  "goal": "replace normalized chassis kinematics with explicit differential-drive geometry and remove blocking PC ASCII UART sends by unifying them under an async path",
+  "deliverable": [
+    "explicit chassis geometry parameters",
+    "geometry-based observer and wheel-reference mapping",
+    "non-blocking PC ASCII reply path",
+    "build verification"
+  ],
+  "constraints": [
+    "do not change external command semantics or protocol formats",
+    "do not introduce a second independent UART state machine",
+    "preserve existing async link_proto behavior"
+  ],
+  "acceptance_criteria": [
+    "robot_control no longer derives v_est/w_est directly from MAX_CPS normalization",
+    "pc_link command replies no longer use blocking HAL_UART_Transmit",
+    "build succeeds"
+  ],
+  "autonomy_mode": "interactive_governed",
+  "status": "completed"
+}

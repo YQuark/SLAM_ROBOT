@@ -102,6 +102,28 @@ cmake --build --preset Debug
 
 这也是上位机、ESP 桥接和串口调试时应该遵守的语义边界。
 
+### 控制源纠偏策略
+
+当前直行纠偏按控制源分层：
+
+- `PC` / 上位机闭环速度命令允许使用 `yaw_hold`
+  - 适合导航或上位机直行辅助
+  - IMU 有效时以融合航向作为保持参考
+  - IMU 无效时回退到底盘 `w_est` 做阻尼项
+- `PS2` / `ESP` 人工遥控源不默认叠加绝对航向保持
+  - 避免手动轻微转向后被控制器强行拉回旧航向
+  - 直行时使用 `straight_balance` 做小幅扶正
+  - IMU 有效时优先使用车体 Z 轴角速度 `gz` 抑制持续偏航
+  - IMU 无效时回退编码器估计的 `w_est`
+
+相关开关位于 `Core/Inc/Drivers/robot_config.h`：
+
+- `YAW_HOLD_ALLOW_PC / PS2 / ESP`
+- `STRAIGHT_BALANCE_ALLOW_PC / PS2 / ESP`
+- `STRAIGHT_BALANCE_USE_IMU`
+
+当前默认值是 `PC` 使用航向保持，`PS2/ESP` 使用直行平衡；这属于控制体验策略，不改变串口协议格式。
+
 ## 串口与协议
 
 默认串口参数：
@@ -299,6 +321,17 @@ ASCII 状态流和正式对接的关系：
 - `control_api` 表示当前应该调用哪类控制接口：`none / raw / drive`
 - `cmd_space` 表示最近一帧 STM32 状态里的命令语义：`none / velocity / raw`
 
+### 控制保活节奏
+
+STM32 侧 `CMD_TIMEOUT_MS = 300ms`。ESP-01S 为避免 HTTP 长按控制因浏览器请求抖动而断续，会按固定节奏刷新当前命令：
+
+- 串口控制帧最小发送间隔：`DRIVE_SEND_PERIOD_MS = 40ms`
+- 未变化命令刷新间隔：`CONTROL_REFRESH_MS = 100ms`
+- 前端长按重发间隔：`HOLD_KEEP_MS = 120ms`
+- HTTP 命令空闲保护：`CMD_IDLE_STOP_MS = 700ms`
+
+释放按键、窗口失焦或页面隐藏时仍会立即发送 `0,0` 停车命令。重复 HTTP 命令被过滤时也会刷新 HTTP 活跃时间，避免“命令没变”被误判为空闲。
+
 ## Odom 与 IMU 使用边界
 
 当前 odom 策略是“编码器主导，IMU 航向辅助”。
@@ -319,6 +352,8 @@ ASCII 状态流和正式对接的关系：
 - 平移里程以编码器为主
 - 航向可参考 `yaw_est`
 - `raw_accel` 仍然只用于调试，不应直接参与平移积分
+- IMU 静态校准会先把传感器坐标映射到车体坐标，再检查重力是否主要落在车体 `+Z`
+- 如果静态重力方向不符合安装预期，加速度校准会置为无效，`imu_accel_valid=0`
 
 注意：
 
@@ -390,11 +425,4 @@ ASCII 状态流和正式对接的关系：
   - UART / I2C 初始化顺序
   - IMU 启动与校准流程
 - 协议文档：`docs/serial_protocols.md`
-
-## 8. 注意事项
-
-- 本仓库可能包含本地 IDE 配置与临时构建目录，请按需忽略后再提交。
-- 若重新生成 CubeMX 代码，请重点回归测试：
-  - GPIO 复用（编码器/PS2 引脚）
-  - 定时器模式（PWM/编码器）
-  - 串口与 I2C 初始化顺序
+- 本仓库可能包含本地 IDE 配置、构建目录和工具日志，提交前应区分项目交付内容与本地运行痕迹。

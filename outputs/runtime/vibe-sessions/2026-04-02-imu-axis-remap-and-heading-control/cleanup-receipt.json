@@ -1,0 +1,25 @@
+{
+  "run_id": "2026-04-02-imu-axis-remap-and-heading-control",
+  "stage": "phase_cleanup",
+  "temp_files_removed": [],
+  "node_audit": {
+    "performed": false,
+    "reason": "STM32 firmware task; no managed Node runtime involved"
+  },
+  "proof_artifacts": [
+    "docs/requirements/2026-04-02-imu-axis-remap-and-heading-control.md",
+    "docs/plans/2026-04-02-imu-axis-remap-and-heading-control-execution-plan.md",
+    "outputs/runtime/vibe-sessions/2026-04-02-imu-axis-remap-and-heading-control/skeleton-receipt.json",
+    "outputs/runtime/vibe-sessions/2026-04-02-imu-axis-remap-and-heading-control/intent-contract.json",
+    "outputs/runtime/vibe-sessions/2026-04-02-imu-axis-remap-and-heading-control/phase-plan-execute.json"
+  ],
+  "delivery_acceptance": {
+    "full_completion_language_allowed": true,
+    "basis": [
+      "IMU body-frame remap implemented",
+      "IMU-dominant heading control applied",
+      "firmware build succeeded"
+    ]
+  },
+  "status": "completed"
+}

@@ -77,6 +77,9 @@
 #define IMU_BODY_X_SIGN            1.0f
 #define IMU_BODY_Y_SIGN            1.0f
 #define IMU_BODY_Z_SIGN            1.0f
+/* 静止校准时，重力应主要落在车体 +Z 轴。这里约束的是映射后的车体坐标，不是传感器原始坐标。 */
+#define IMU_CALIB_BODY_Z_MIN_G     0.80f
+#define IMU_CALIB_BODY_XY_MAX_G    0.35f
 
 /* ======== 四轮 PI 参数（初值，实车调） ======== */
 #define PI_INT_LIM              1.0f
@@ -127,21 +130,30 @@
 #define YAW_HOLD_W_THRESH        0.06f
 #define YAW_HOLD_V_MIN           0.05f
 #define YAW_HOLD_W_LIM           0.42f
+/* 自动航向保持是导航/上位机直行辅助，不默认叠加到人工遥控源。 */
+#define YAW_HOLD_ALLOW_PC           1u
+#define YAW_HOLD_ALLOW_PS2          0u
+#define YAW_HOLD_ALLOW_ESP          0u
 
 /* ======== Straight-line balance ======== */
-/* 直行时根据左右编码器速度差做小幅差速补偿，抑制底盘天然跑偏。 */
-#define CTRL_USE_STRAIGHT_BALANCE  0u
+/* 直行时做小幅差速补偿；IMU 有效时优先用车体 Z 轴角速度，失败时回退编码器估计。人工源用它扶直，不使用绝对航向锁定。 */
+#define CTRL_USE_STRAIGHT_BALANCE  1u
+#define STRAIGHT_BALANCE_ALLOW_PC     0u
+#define STRAIGHT_BALANCE_ALLOW_PS2    1u
+#define STRAIGHT_BALANCE_ALLOW_ESP    1u
+#define STRAIGHT_BALANCE_USE_IMU      1u
 #define STRAIGHT_BALANCE_V_MIN    0.06f
 #define STRAIGHT_BALANCE_W_THRESH 0.08f
-#define STRAIGHT_BALANCE_KP       1.60f
-#define STRAIGHT_BALANCE_KI       0.55f
-#define STRAIGHT_BALANCE_I_LIM    0.12f
-#define STRAIGHT_BALANCE_W_LIM    0.30f
+#define STRAIGHT_BALANCE_RATE_DEADBAND_DPS 0.80f
+#define STRAIGHT_BALANCE_KP       0.85f
+#define STRAIGHT_BALANCE_KI       0.12f
+#define STRAIGHT_BALANCE_I_LIM    0.05f
+#define STRAIGHT_BALANCE_W_LIM    0.16f
 #define STRAIGHT_TRIM_W           0.000f
 
 /* ======== Side gain trim ======== */
 /* 车体直行固定向左偏时设为正，固定向右偏时设为负。 */
-#define STRAIGHT_SIDE_TRIM        0.00f
+#define STRAIGHT_SIDE_TRIM        0.02f
 
 /* ======== Wheel loop anti-windup / low-speed ======== */
 #define PI_AW_KAW                0.25f

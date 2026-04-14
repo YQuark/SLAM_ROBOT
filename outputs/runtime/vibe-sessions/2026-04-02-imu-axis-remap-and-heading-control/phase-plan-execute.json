@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-04-02-imu-axis-remap-and-heading-control",
+  "stage": "plan_execute",
+  "changes": [
+    {
+      "area": "imu_axis_remap",
+      "summary": "Added a fixed body-frame remap in MPU6050_Convert so the vertically mounted sensor is interpreted in chassis coordinates before attitude fusion."
+    },
+    {
+      "area": "heading_control",
+      "summary": "Changed heading hold to use IMU heading directly when IMU data is valid instead of using encoder-contaminated yaw as the primary straight-line correction source."
+    },
+    {
+      "area": "compensation_cleanup",
+      "summary": "Disabled encoder straight-balance compensation, zeroed static side trim, and reduced encoder weight in yaw fusion so control is less vulnerable to wheel slip."
+    }
+  ],
+  "verification": {
+    "build_command": "powershell.exe -Command \"& 'D:\\Program Files\\STM32CubeCLT_1.19.0\\CMake\\bin\\cmake.exe' --build 'D:\\Document\\Work\\projects\\Clion\\build\\Debug'\"",
+    "build_result": "passed"
+  },
+  "status": "completed"
+}

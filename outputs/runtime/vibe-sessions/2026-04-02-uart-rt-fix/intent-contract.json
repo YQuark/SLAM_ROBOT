@@ -1,0 +1,22 @@
+{
+  "run_id": "2026-04-02-uart-rt-fix",
+  "stage": "deep_interview",
+  "goal": "remove runtime blocking UART sends from the control path and convert binary link protocol sending to non-blocking async transmission",
+  "deliverable": [
+    "runtime control-path logging cleanup",
+    "asynchronous link_proto transmit path",
+    "UART Tx complete callback integration",
+    "build verification"
+  ],
+  "constraints": [
+    "do not change protocol frame format or message semantics",
+    "prioritize runtime real-time behavior over preserving all debug output"
+  ],
+  "acceptance_criteria": [
+    "LinkProto_Poll no longer blocks on UART transmit",
+    "runtime main-loop telemetry no longer uses blocking HAL_UART_Transmit",
+    "build succeeds"
+  ],
+  "autonomy_mode": "interactive_governed",
+  "status": "completed"
+}

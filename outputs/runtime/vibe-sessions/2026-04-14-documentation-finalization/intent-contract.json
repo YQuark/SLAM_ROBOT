@@ -1,0 +1,38 @@
+{
+  "stage": "deep_interview",
+  "goal": "align repository documentation with current firmware and ESP bridge behavior, then commit and push",
+  "deliverable": "documentation updates, governance receipts, verification evidence, git commit, and SSH push",
+  "constraints": [
+    "no new business logic changes",
+    "do not overwrite existing user changes",
+    "use standard git commit prefix with Chinese description",
+    "keep unverified real-vehicle behavior explicitly marked as unverified"
+  ],
+  "acceptance_criteria": [
+    "README and serial protocol docs match current control-source policy",
+    "requirements and plans no longer contradict current code",
+    "build command executed",
+    "commit and push succeed"
+  ],
+  "product_acceptance_criteria": [
+    "host and ESP consumers can understand current interface and control semantics",
+    "future tuning work has traceable requirement and plan records"
+  ],
+  "manual_spot_checks": [
+    "README control architecture and ESP sections",
+    "serial protocol control-source and IMU sections",
+    "git diff and status before commit"
+  ],
+  "completion_language_policy": "only claim pushed after successful git push; do not claim final real-vehicle calibration",
+  "delivery_truth_contract": "documentation and repository delivery only, not real-world performance validation",
+  "non_goals": [
+    "control algorithm refactor",
+    "protocol format changes",
+    "host-side ROS bridge changes"
+  ],
+  "autonomy_mode": "autonomous execution from explicit user request",
+  "inferred_assumptions": [
+    "current uncommitted code changes are intended for this delivery",
+    "local WPS logs are not part of the requested documentation delivery"
+  ]
+}

@@ -81,6 +81,47 @@ Hard rules for the host:
 
 This contract is meant to make upper-layer mapping and navigation consume the same motion interpretation that the firmware itself uses internally.
 
+## Control Source Correction Policy
+
+Current closed-loop straight-line correction is source-aware:
+
+- PC / host commands may use absolute heading hold.
+  - Controlled by `YAW_HOLD_ALLOW_PC = 1`.
+  - The controller captures the current fused heading as `yaw_hold` reference when straight driving starts.
+  - If IMU attitude is valid, the damping term uses bias-corrected body Z gyro.
+  - If IMU is not valid, the damping term falls back to firmware-side `w_est`.
+- PS2 and ESP manual commands do not use absolute heading hold by default.
+  - Controlled by `YAW_HOLD_ALLOW_PS2 = 0` and `YAW_HOLD_ALLOW_ESP = 0`.
+  - They use `straight_balance` for small straight-line assistance.
+  - With `STRAIGHT_BALANCE_USE_IMU = 1`, valid IMU data makes this balance loop use bias-corrected body Z gyro first.
+  - If IMU is invalid, it falls back to encoder-derived `w_est`.
+
+The default source gates are:
+
+- `YAW_HOLD_ALLOW_PC = 1`
+- `YAW_HOLD_ALLOW_PS2 = 0`
+- `YAW_HOLD_ALLOW_ESP = 0`
+- `STRAIGHT_BALANCE_ALLOW_PC = 0`
+- `STRAIGHT_BALANCE_ALLOW_PS2 = 1`
+- `STRAIGHT_BALANCE_ALLOW_ESP = 1`
+
+This policy does not change the binary protocol. It only changes how the firmware interprets fresh commands from each source while in `MODE_CLOSED_LOOP`.
+
+## IMU Mount And Static Gravity Gate
+
+The MPU6050 data path maps raw sensor axes into body-frame axes before attitude fusion and calibration checks. Current mount assumptions are configured in `Core/Inc/Drivers/robot_config.h`:
+
+- body X comes from sensor Y
+- body Y comes from sensor Z
+- body Z comes from sensor X
+
+During static calibration, firmware now checks the mapped body-frame average acceleration:
+
+- body Z must be at least `IMU_CALIB_BODY_Z_MIN_G`
+- body X/Y magnitude must stay below `IMU_CALIB_BODY_XY_MAX_G`
+
+If the mapped static gravity direction is not plausible, accelerometer calibration is rejected and `imu_accel_valid` remains `0`. This protects host consumers from treating a wrong IMU mounting direction as a trusted acceleration source.
+
 ## Binary Framed Protocol
 
 ### Supported Links
@@ -453,6 +494,26 @@ Important fields:
 - `velocity`
 - `raw`
 
+### HTTP Hold And Serial Keep-Alive Timing
+
+STM32 command freshness is bounded by `CMD_TIMEOUT_MS = 300ms`. The ESP bridge keeps active HTTP control below that age limit:
+
+- serial control frame minimum period: `DRIVE_SEND_PERIOD_MS = 40ms`
+- unchanged command refresh period: `CONTROL_REFRESH_MS = 100ms`
+- browser hold resend period: `HOLD_KEEP_MS = 120ms`
+- HTTP idle stop guard: `CMD_IDLE_STOP_MS = 700ms`
+- HTTP duplicate filter window: `CMD_DUP_FILTER_MS = 60ms`
+
+Important behavior:
+
+- `/cmd` refreshes closed-loop velocity commands.
+- `/raw` refreshes open-loop left/right raw commands.
+- Repeated identical HTTP commands still update the HTTP active timestamp before returning `OK`.
+- If HTTP commands stop for longer than `CMD_IDLE_STOP_MS`, the bridge marks both pending velocity and raw commands as zero.
+- Button release, page blur, or page hide sends an immediate zero command; the 700ms idle guard is only a fallback for lost release events.
+
+When the web UI switches between closed-loop and open-loop views, the long-press handler stores both drive-space and raw-space values and sends the pair appropriate for the latest `status.mode`.
+
 ## Current Mode Policy
 
 Current firmware startup / local-control policy is:
@@ -482,6 +543,8 @@ Current policy:
 - bias-corrected gyro is exported for host use
 - accelerometer values are debug-only until the abnormal acceleration issue is resolved
 - firmware now distinguishes `imu_valid` (heading usable) from `imu_accel_valid` (acceleration usable)
+- static accelerometer validity also requires mapped body-frame gravity to match the configured mount direction
+- manual-source straight balance uses body Z gyro first when IMU is valid, but still falls back to encoder `w_est`
 
 Quaternion and world-frame linear acceleration remain available inside firmware via `Attitude_GetData()`, but they are not part of the current host odometry contract.
 

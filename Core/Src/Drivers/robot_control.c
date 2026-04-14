@@ -725,6 +725,14 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         float w_ref = s_w_ref_filt;
         float heading_for_hold = s_st.imu_valid ? s_yaw_imu : s_st.yaw_est;
         float imu_gz_dps = 0.0f;
+        uint8_t yaw_hold_allowed =
+            ((src == CMD_SRC_PC) && YAW_HOLD_ALLOW_PC) ||
+            ((src == CMD_SRC_PS2) && YAW_HOLD_ALLOW_PS2) ||
+            ((src == CMD_SRC_ESP) && YAW_HOLD_ALLOW_ESP);
+        uint8_t straight_balance_allowed =
+            ((src == CMD_SRC_PC) && STRAIGHT_BALANCE_ALLOW_PC) ||
+            ((src == CMD_SRC_PS2) && STRAIGHT_BALANCE_ALLOW_PS2) ||
+            ((src == CMD_SRC_ESP) && STRAIGHT_BALANCE_ALLOW_ESP);
         const float max_linear_mps = chassis_max_linear_mps();
         const float max_angular_radps = chassis_max_angular_radps();
         float v_ref_mps;
@@ -740,7 +748,9 @@ void RobotControl_Update(float dt, uint32_t now_ms)
         s_outer_i_w = 0.0f;
 
 #if CTRL_USE_YAW_HOLD
-        if (fabsf(v_ref) >= YAW_HOLD_V_MIN && fabsf(w_cmd) < YAW_HOLD_W_THRESH) {
+        if (yaw_hold_allowed &&
+            fabsf(v_ref) >= YAW_HOLD_V_MIN &&
+            fabsf(w_cmd) < YAW_HOLD_W_THRESH) {
             float yaw_err;
             float yaw_corr;
             float yaw_rate_term = 0.0f;
@@ -778,10 +788,20 @@ void RobotControl_Update(float dt, uint32_t now_ms)
 #endif
 
 #if CTRL_USE_STRAIGHT_BALANCE
-        if (fabsf(v_ref) >= STRAIGHT_BALANCE_V_MIN &&
+        if (straight_balance_allowed &&
+            fabsf(v_ref) >= STRAIGHT_BALANCE_V_MIN &&
             fabsf(w_cmd) < STRAIGHT_BALANCE_W_THRESH) {
-            float straight_err = -s_st.w_est;
+            float straight_err;
             float straight_corr;
+            if (STRAIGHT_BALANCE_USE_IMU && s_st.imu_valid) {
+                float straight_gz_dps = s_imu_last.gz_dps - att->gyro_bias_z;
+                if (fabsf(straight_gz_dps) < STRAIGHT_BALANCE_RATE_DEADBAND_DPS) {
+                    straight_gz_dps = 0.0f;
+                }
+                straight_err = -clampf(straight_gz_dps / IMU_W_DPS_SCALE, -1.0f, 1.0f);
+            } else {
+                straight_err = -s_st.w_est;
+            }
             w_ref += STRAIGHT_TRIM_W;
             s_straight_i_w += STRAIGHT_BALANCE_KI * straight_err * dt;
             s_straight_i_w = clampf(s_straight_i_w,

@@ -1,0 +1,24 @@
+{
+  "run_id": "2026-04-02-kinematics-pc-link-hardening",
+  "stage": "plan_execute",
+  "changes": [
+    {
+      "area": "chassis_kinematics",
+      "summary": "Added explicit differential-drive geometry parameters and converted observer plus closed-loop wheel reference mapping to geometry-based formulas while preserving normalized external v/w semantics."
+    },
+    {
+      "area": "pc_uart_async",
+      "summary": "Unified PC ASCII replies and telemetry under the existing link_proto async UART send path so runtime command responses no longer use blocking HAL_UART_Transmit."
+    },
+    {
+      "area": "shared_tx_queue",
+      "summary": "Reworked link_proto transmit state from a single pending frame into a small shared async queue and exposed a raw-send API for the PC link."
+    }
+  ],
+  "verification": {
+    "blocking_uart_scan": "rg -n \"HAL_UART_Transmit\\(\" ... => no matches in pc_link.c/link_proto.c/robot_control.c",
+    "build_command": "powershell.exe -Command \"& 'D:\\Program Files\\STM32CubeCLT_1.19.0\\CMake\\bin\\cmake.exe' --build 'D:\\Document\\Work\\projects\\Clion\\build\\Debug'\"",
+    "build_result": "passed"
+  },
+  "status": "completed"
+}

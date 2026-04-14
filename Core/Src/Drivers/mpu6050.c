@@ -42,6 +42,7 @@ static void MapSensorFrameToBody(float sx, float sy, float sz,
                                  float *bx, float *by, float *bz);
 static float SelectSensorAxis(uint8_t axis, float sx, float sy, float sz);
 static uint8_t DetectStillness(float ax, float ay, float az, float gx, float gy, float gz);
+static uint8_t DetectExpectedStaticGravity(float ax, float ay, float az);
 static float ClampFloat(float x, float lo, float hi);
 
 static HAL_StatusTypeDef MPU6050_WriteReg(uint8_t reg, uint8_t value)
@@ -336,6 +337,18 @@ static uint8_t DetectStillness(float ax, float ay, float az, float gx, float gy,
     return 0u;
 }
 
+static uint8_t DetectExpectedStaticGravity(float ax, float ay, float az)
+{
+    if (az < IMU_CALIB_BODY_Z_MIN_G) {
+        return 0u;
+    }
+    if (fabsf(ax) > IMU_CALIB_BODY_XY_MAX_G ||
+        fabsf(ay) > IMU_CALIB_BODY_XY_MAX_G) {
+        return 0u;
+    }
+    return 1u;
+}
+
 static float ClampFloat(float x, float lo, float hi)
 {
     if (x < lo) {
@@ -528,6 +541,7 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
     float avg_az;
     float avg_accel_magnitude;
     uint8_t accel_trustworthy;
+    uint8_t accel_mount_ok;
     uint8_t gyro_bad;
 
     if (imu == NULL || dt <= 0.0f) {
@@ -586,18 +600,22 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
             avg_ay = s_calib.sum_ay / (float)s_calib.sample_count;
             avg_az = s_calib.sum_az / (float)s_calib.sample_count;
             avg_accel_magnitude = sqrtf(avg_ax * avg_ax + avg_ay * avg_ay + avg_az * avg_az);
+            accel_mount_ok = DetectExpectedStaticGravity(avg_ax, avg_ay, avg_az);
 
             if (avg_accel_magnitude >= IMU_ACCEL_BIAS_CALIB_MIN_G &&
-                avg_accel_magnitude <= IMU_ACCEL_BIAS_CALIB_MAX_G) {
+                avg_accel_magnitude <= IMU_ACCEL_BIAS_CALIB_MAX_G &&
+                accel_mount_ok) {
                 s_attitude.accel_bias_x = avg_ax;
                 s_attitude.accel_bias_y = avg_ay;
                 s_attitude.accel_bias_z = avg_az - 1.0f;
                 s_attitude.accel_valid = 1u;
+                s_calib_fail_reason = IMU_CALIB_FAIL_NONE;
             } else {
                 s_attitude.accel_bias_x = 0.0f;
                 s_attitude.accel_bias_y = 0.0f;
                 s_attitude.accel_bias_z = 0.0f;
                 s_attitude.accel_valid = 0u;
+                s_calib_fail_reason = IMU_CALIB_FAIL_ACCEL;
             }
 
             s_calib.state = IMU_CALIB_DONE;
@@ -612,14 +630,21 @@ void Attitude_Update(const MPU6050_Data_t *imu, float dt)
                 int32_t bias_x_cdps = (int32_t)(s_attitude.gyro_bias_x * 100.0f);
                 int32_t bias_y_cdps = (int32_t)(s_attitude.gyro_bias_y * 100.0f);
                 int32_t bias_z_cdps = (int32_t)(s_attitude.gyro_bias_z * 100.0f);
+                int32_t avg_ax_mg = (int32_t)(avg_ax * 1000.0f);
+                int32_t avg_ay_mg = (int32_t)(avg_ay * 1000.0f);
+                int32_t avg_az_mg = (int32_t)(avg_az * 1000.0f);
                 int32_t accel_norm_mg = (int32_t)(avg_accel_magnitude * 1000.0f);
                 int n = snprintf(buf, sizeof(buf),
-                                 "IMU Calib DONE: dt_ms=%lu gyro_bias_cdps=%ld,%ld,%ld accel_ok=%u accel_norm_mg=%ld\r\n",
+                                 "IMU Calib DONE: dt_ms=%lu gyro_bias_cdps=%ld,%ld,%ld accel_ok=%u mount_ok=%u avg_body_acc_mg=%ld,%ld,%ld accel_norm_mg=%ld\r\n",
                                  (unsigned long)(s_calib.elapsed_s * 1000.0f),
                                  (long)bias_x_cdps,
                                  (long)bias_y_cdps,
                                  (long)bias_z_cdps,
                                  (unsigned int)s_attitude.accel_valid,
+                                 (unsigned int)accel_mount_ok,
+                                 (long)avg_ax_mg,
+                                 (long)avg_ay_mg,
+                                 (long)avg_az_mg,
                                  (long)accel_norm_mg);
                 HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 100);
             }

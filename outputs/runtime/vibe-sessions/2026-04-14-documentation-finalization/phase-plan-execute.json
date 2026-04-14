@@ -1,0 +1,44 @@
+{
+  "stage": "plan_execute",
+  "run_id": "2026-04-14-documentation-finalization",
+  "completed_actions": [
+    "inspected repository status, branch, remote, code diffs, and existing docs",
+    "added current requirement and execution plan documents",
+    "updated README with control-source correction policy, ESP keep-alive timing, and IMU static gravity gate",
+    "updated serial protocol docs with source-aware correction policy, IMU mount gate, and HTTP keep-alive contract",
+    "corrected 2026-04-02 IMU and straight-line requirements/plans to match current implementation",
+    "fixed one misleading configuration comment without changing functional code"
+  ],
+  "verification": [
+    {
+      "command": "rg -n \"YAW_HOLD_ALLOW|STRAIGHT_BALANCE_ALLOW|CONTROL_REFRESH_MS|CMD_IDLE_STOP_MS|imu_accel_valid|imu_valid\" README.md docs Core/Inc/Drivers/robot_config.h ESP01S/ESP01S/ESP01S.ino",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "cmake --build --preset Debug",
+      "result": "blocked",
+      "reason": "cmake is not installed or not available in PATH in the current WSL environment"
+    },
+    {
+      "command": "ninja / arm-none-eabi-gcc availability check",
+      "result": "blocked",
+      "reason": "ninja and arm-none-eabi-gcc are not available in PATH"
+    }
+  ],
+  "delivery_scope_decision": {
+    "include": [
+      "STM32/ESP code changes already present in the worktree",
+      "README and docs updates",
+      "requirements/plans/runtime receipts related to the current firmware work"
+    ],
+    "exclude": [
+      "logs/combined.log local WPS MCP runtime log change",
+      "empty untracked .codex file"
+    ]
+  },
+  "residual_risk": "No real-vehicle test was performed and build tools are unavailable in the current shell, so firmware build success is not claimed."
+}

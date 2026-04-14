@@ -1,0 +1,15 @@
+{
+  "run_id": "2026-04-02-uart-rt-fix",
+  "stage": "plan_execute",
+  "changes": [
+    "added non-blocking async transmit state to link_proto",
+    "added LinkProto UART Tx complete callback entrypoint",
+    "wired main HAL_UART_TxCpltCallback to link_proto",
+    "removed runtime blocking telemetry and IMU debug prints from main control path"
+  ],
+  "verification": {
+    "command": "powershell.exe -Command \"& 'D:\\Program Files\\STM32CubeCLT_1.19.0\\CMake\\bin\\cmake.exe' --build 'D:\\Document\\Work\\projects\\Clion\\build\\Debug'\"",
+    "result": "passed"
+  },
+  "status": "completed"
+}

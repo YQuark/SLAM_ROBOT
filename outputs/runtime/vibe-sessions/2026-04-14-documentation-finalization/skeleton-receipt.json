@@ -1,0 +1,15 @@
+{
+  "stage": "skeleton_check",
+  "run_id": "2026-04-14-documentation-finalization",
+  "repo_root": "/mnt/d/Document/Work/projects/Clion",
+  "branch": "master",
+  "remote": "origin git@github.com:YQuark/SLAM_ROBOT",
+  "observed_changes": [
+    "STM32 control configuration and IMU/control source logic changes",
+    "ESP01S HTTP bridge keep-alive changes",
+    "untracked 2026-04-02 requirements, plans, and vibe receipts",
+    "tracked local WPS MCP log changes",
+    "empty untracked .codex file"
+  ],
+  "decision": "treat code/docs/runtime receipts as delivery scope; treat local tool logs and empty .codex as out of scope unless explicitly requested"
+}

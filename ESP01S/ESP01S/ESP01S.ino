@@ -114,10 +114,11 @@ static uint32_t g_loopLastMs = 0;
 
 static const uint32_t WDT_TIMEOUT_MS = 8000;
 static const uint32_t DRIVE_SEND_PERIOD_MS = 40;  // Reduce command TX pressure
-static const uint32_t CMD_IDLE_STOP_MS = 250;     // Stop quickly after HTTP command loss
+static const uint32_t CONTROL_REFRESH_MS = 100;   // Keep STM32 command age well below CMD_TIMEOUT_MS
+static const uint32_t CMD_IDLE_STOP_MS = 700;     // HTTP long-press jitter margin; release still sends stop immediately
 static const uint32_t STATUS_POLL_MS = 500;
 static const uint32_t STA_CONNECT_TIMEOUT_MS = 15000;
-static const uint32_t CMD_DUP_FILTER_MS = 100;
+static const uint32_t CMD_DUP_FILTER_MS = 60;
 static const uint16_t SERIAL_RX_BUDGET_BYTES = 256;
 static const uint32_t UART_WRITE_TIMEOUT_MS = 8;
 
@@ -558,7 +559,7 @@ static void serviceControlTx(uint32_t now) {
   if ((uint32_t)(now - lastTx) < DRIVE_SEND_PERIOD_MS) return;
 
   if (openLoop) {
-    if (!g_rawDirty && (uint32_t)(now - g_lastRawTxMs) < 150u) {
+    if (!g_rawDirty && (uint32_t)(now - g_lastRawTxMs) < CONTROL_REFRESH_MS) {
       return;
     }
     if (g_rawDirty) {
@@ -575,7 +576,7 @@ static void serviceControlTx(uint32_t now) {
     return;
   }
 
-  if (!g_cmdDirty && (uint32_t)(now - g_lastCmdTxMs) < 150u) {
+  if (!g_cmdDirty && (uint32_t)(now - g_lastCmdTxMs) < CONTROL_REFRESH_MS) {
     return;
   }
   if (g_cmdDirty) {
@@ -731,13 +732,14 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <script>
 const V = 0.78;
 const W = 0.52;
-const HOLD_KEEP_MS = 160;
-const REQ_TIMEOUT_MS = 900;
+const HOLD_KEEP_MS = 120;
+const REQ_TIMEOUT_MS = 650;
 let inflight = false;
 let queued = null;
 let lastSentV = 99, lastSentW = 99;
 let lastSentMs = 0;
-let holdV = 0, holdW = 0;
+let holdDriveV = 0, holdDriveW = 0;
+let holdRawL = 0, holdRawR = 0;
 let holdActive = false;
 let holdTimer = null;
 let wifiPollDiv = 0;
@@ -794,14 +796,29 @@ function send(v,w){
   doSend(v,w);
 }
 
-function startHold(v,w){
-  if (holdActive && Math.abs(holdV - v) < 0.001 && Math.abs(holdW - w) < 0.001) return;
-  holdV = v; holdW = w;
+function selectedHoldValues(){
+  return (statusMode === 1)
+    ? {v: holdRawL, w: holdRawR}
+    : {v: holdDriveV, w: holdDriveW};
+}
+
+function startHold(driveV, driveW, rawL, rawR){
+  if (holdActive &&
+      Math.abs(holdDriveV - driveV) < 0.001 &&
+      Math.abs(holdDriveW - driveW) < 0.001 &&
+      Math.abs(holdRawL - rawL) < 0.001 &&
+      Math.abs(holdRawR - rawR) < 0.001) return;
+  holdDriveV = driveV; holdDriveW = driveW;
+  holdRawL = rawL; holdRawR = rawR;
   holdActive = true;
-  send(holdV, holdW);
+  const c = selectedHoldValues();
+  send(c.v, c.w);
   if (holdTimer) clearInterval(holdTimer);
   holdTimer = setInterval(()=>{
-    if (holdActive) send(holdV, holdW);
+    if (holdActive) {
+      const c = selectedHoldValues();
+      send(c.v, c.w);
+    }
   }, HOLD_KEEP_MS);
 }
 
@@ -811,12 +828,12 @@ function stopHold(sendStop=true){
   if(sendStop) send(0,0);
 }
 
-function bindHold(id, v, w){
+function bindHold(id, driveV, driveW, rawL, rawR){
   const e = document.getElementById(id);
   const down = (ev) => {
     ev.preventDefault();
     if (e.setPointerCapture && ev.pointerId !== undefined) e.setPointerCapture(ev.pointerId);
-    startHold(v, w);
+    startHold(driveV, driveW, rawL, rawR);
   };
   const up = (ev) => { ev.preventDefault(); stopHold(true); };
   e.addEventListener('pointerdown', down);
@@ -825,10 +842,10 @@ function bindHold(id, v, w){
   e.addEventListener('contextmenu', ev => ev.preventDefault());
 }
 
-bindHold('up', V, 0);
-bindHold('down', -V, 0);
-bindHold('left', -W, W);
-bindHold('right', W, -W);
+bindHold('up', V, 0, V, V);
+bindHold('down', -V, 0, -V, -V);
+bindHold('left', 0, W, -W, W);
+bindHold('right', 0, -W, W, -W);
 document.getElementById('stop').addEventListener('click', ()=>stopHold(true));
 window.addEventListener('blur', ()=>stopHold(true));
 document.addEventListener('visibilitychange', ()=>{ if(document.hidden) stopHold(true); });
@@ -936,6 +953,8 @@ static void handleCmd() {
   if (fabsf(v - g_lastHttpCmdV) < 0.001f &&
       fabsf(w - g_lastHttpCmdW) < 0.001f &&
       (uint32_t)(now - g_lastHttpRxMs) < 120u) {
+    g_lastHttpRxMs = now;
+    g_lastHttpCmdMs = now;
     server.send(200, "text/plain", "OK");
     return;
   }
@@ -947,6 +966,7 @@ static void handleCmd() {
   if (fabsf(v - g_lastCmdV) < 0.001f &&
       fabsf(w - g_lastCmdW) < 0.001f &&
       (uint32_t)(now - g_lastCmdTxMs) < CMD_DUP_FILTER_MS) {
+    g_lastHttpCmdMs = now;
     server.send(200, "text/plain", "OK");
     return;
   }
@@ -974,6 +994,8 @@ static void handleRaw() {
   if (fabsf(left - g_lastHttpRawL) < 0.001f &&
       fabsf(right - g_lastHttpRawR) < 0.001f &&
       (uint32_t)(now - g_lastHttpRxMs) < 120u) {
+    g_lastHttpRxMs = now;
+    g_lastHttpCmdMs = now;
     server.send(200, "text/plain", "OK");
     return;
   }
@@ -984,6 +1006,7 @@ static void handleRaw() {
   if (fabsf(left - g_lastRawL) < 0.001f &&
       fabsf(right - g_lastRawR) < 0.001f &&
       (uint32_t)(now - g_lastRawTxMs) < CMD_DUP_FILTER_MS) {
+    g_lastHttpCmdMs = now;
     server.send(200, "text/plain", "OK");
     return;
   }
