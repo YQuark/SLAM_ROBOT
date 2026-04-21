@@ -131,7 +131,7 @@
 #define YAW_HOLD_V_MIN           0.05f
 #define YAW_HOLD_W_LIM           0.42f
 /* 自动航向保持是导航/上位机直行辅助，不默认叠加到人工遥控源。 */
-#define YAW_HOLD_ALLOW_PC           1u
+#define YAW_HOLD_ALLOW_PC           0u
 #define YAW_HOLD_ALLOW_PS2          0u
 #define YAW_HOLD_ALLOW_ESP          0u
 
@@ -182,7 +182,7 @@
 /* 指令超时：超过这个时间未更新则自动刹停（ms） */
 #define CMD_TIMEOUT_MS         300u
 #define LINK_ACTIVE_TIMEOUT_MS 1200u
-#define CMD_INPUT_DEADZONE    0.04f
+#define CMD_INPUT_DEADZONE    0.005f
 
 /* ======== 日志/观测 ======== */
 #define TELEMETRY_INTERVAL_MS  200u   /* 输出调参信息的最小间隔（ms） */
